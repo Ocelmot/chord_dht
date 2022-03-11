@@ -1,13 +1,11 @@
-use std::{io::ErrorKind, collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, ops::Bound::{Included, Unbounded}, time::Duration};
 
 
-use tokio::{net::{TcpListener, TcpStream, ToSocketAddrs, tcp::{OwnedReadHalf, OwnedWriteHalf}}, time::Instant, io::AsyncWriteExt};
+use tokio::{net::{TcpListener, ToSocketAddrs}, io::{self}};
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use tokio::sync::mpsc::error::SendError;
 use tokio::task::JoinHandle;
-use tokio::time::{interval};
-
-use serde_json::{Deserializer};
+use tokio::time::interval;
 
 
 pub mod circular_id;
@@ -17,57 +15,94 @@ pub mod node;
 use node::Node;
 
 pub mod chord_msg;
-use chord_msg::{RawMessage, ProcessMessage, ChordMessage, ControlMessage, ChordMessageType, ExternMessage};
+use chord_msg::{ChordMessage, ChordOperation, RawMessage};
 
+use chrono::Utc;
+
+mod operations;
 
 pub struct DHTChord{
-    broadcast_ch: Sender<ProcessMessage>,
-    pub process_handle: JoinHandle<()>
+    channel: Sender<ChordOperation>,
+    broadcast_channel_rx: Receiver<String>,
+
+    processor_handle: JoinHandle<()>,
+    listener_handle: JoinHandle<()>,
+    stabilizer_handle: JoinHandle<Result<(), SendError<ChordOperation>>>,
 }
 
 impl DHTChord{
 
 
-    pub async fn new<A: ToSocketAddrs>(listen_addr: A, join_addr: Option<A>) ->DHTChord{
-        let listener = TcpListener::bind(listen_addr).await;
-        let listener = listener.expect("Could not create listen socket!");
+    pub async fn new<A: ToSocketAddrs>(listen_addr: A, join_addr: Option<A>) -> io::Result<DHTChord>{
+        
+        let (broadcast_channel_tx, broadcast_channel_rx) = channel::<String>(50);
 
-        let (msg_tx, msg_rx) = channel::<ProcessMessage>(50);
+        // Create and start the message processor
+        let processor = ProcessorData::new(CircularId::rand(), broadcast_channel_tx);
+        let processor_channel = processor.get_channel();
+        let processor_handle = processor.start().await;
+
+
+
+
+        let listener = TcpListener::bind(listen_addr).await?;
+        // let listener = listener.expect("Could not create listen socket!");
 
         // Spawn task to listen and generate tasks to supply the channel
-        // println!("Spawning listen task");
-        tokio::spawn(listen_handler(listener, msg_tx.clone()));
-        
-        // spawn message processing task
-        let ph = tokio::spawn(message_processor(msg_rx));
+        let listener_handle = tokio::spawn(listen_handler(listener, processor_channel.clone()));
 
-        // spawn maintenence task
-        tokio::spawn(chord_upkeep(msg_tx.clone()));
+
+
+
+        let stabilizer_channel = processor_channel.clone();
+        let stabilizer_handle = tokio::spawn(async move{
+            let mut interval = interval(Duration::from_secs(15));
+            loop{
+                interval.tick().await;
+                stabilizer_channel.send(ChordOperation::Stabilize).await?;
+                stabilizer_channel.send(ChordOperation::Notify).await?;
+                stabilizer_channel.send(ChordOperation::FixFingers).await?;
+                stabilizer_channel.send(ChordOperation::CheckPredecessor).await?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), SendError<ChordOperation>>(())
+        });
+
+        
 
         // setup way for outside to query results from chord, return reference to chord
         // Add way to stop queues gracefully
-        DHTChord{
-            broadcast_ch: msg_tx,
-            process_handle: ph 
+        Ok(DHTChord{
+            channel: processor_channel,
+            broadcast_channel_rx,
+
+            processor_handle,
+            listener_handle,
+            stabilizer_handle,
+        })
+    }
+
+    pub async fn send_broadcast(&mut self, data: String){
+        match self.channel.send(ChordOperation::Broadcast(None, data)).await{
+            Ok(_) => {},
+            Err(e) => {
+                panic!("Error: {}", e);
+            },
         }
     }
 
-    pub async fn send_broadcast(&self, data:Vec<u8>){
-        self.broadcast_ch.send(ProcessMessage::Broadcast(data));
+    pub async fn recv_broadcast(&mut self) -> Option<String>{
+        self.broadcast_channel_rx.recv().await
     }
 
-    pub async fn recv_broadcast(&mut self) -> Vec<u8>{
-        todo!();
-    }
+    // pub async fn send_message(self, data:Vec<u8>) -> Vec<u8>{
+    //     // let (channel_tx, channel_rx) = channel(1);
 
-    pub async fn send_message(self, data:Vec<u8>) -> Vec<u8>{
-        // let (channel_tx, channel_rx) = channel(1);
-
-        todo!()
-    }
+    //     todo!()
+    // }
 }
 
-async fn listen_handler(listener: TcpListener, channel: Sender<ProcessMessage>){
+async fn listen_handler(listener: TcpListener, channel: Sender<ChordOperation>){
     // println!("Listening!...");
     loop{
         match listener.accept().await{
@@ -77,195 +112,262 @@ async fn listen_handler(listener: TcpListener, channel: Sender<ProcessMessage>){
             },
             Ok((stream, _)) => {
                 // Spawn sock handlers
-                // println!("Spawning socket handler");
-                tokio::spawn(sock_handler(stream, channel.clone()));
-            }
-        }
-    }
-}
+                let ch = channel.clone();
+                let node = Node::from_stream(stream, ch, move |msg|{
+                    match msg {
+                        ChordMessage::Introduction { from } => None,
+                        ChordMessage::Data { from, data } => todo!(),
+                        ChordMessage::Broadcast { id, msg } => Some(ChordOperation::Broadcast(Some(id), msg)),
 
-async fn sock_handler(stream: TcpStream, channel: Sender<ProcessMessage> ){
-    // add incoming messages into queue
-    let stream_parts = stream.into_split();
-    let stream_read = stream_parts.0;
-    let mut stream_write = Some(stream_parts.1);
-
-    let mut buffer = Vec::new();
-    loop{
-        stream_read.readable().await;
-        let mut tmp_buf = vec![0; 1024];
-        match stream_read.try_read(&mut tmp_buf) {
-            Ok(0) => { 
-                return; // No more data
-            }, 
-            Ok(len) => { // Append data to buffer
-                buffer.extend_from_slice(&tmp_buf[..len]);
-            },
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                continue; // try to read again
-            },
-            Err(e) =>{
-                println!("Encountered error reading from connection: {}", e);
-                // probably should terminate connection here, depending on error
-                continue;
-            }
-        }
-
-        let mut des = Deserializer::from_slice(buffer.as_slice()).into_iter();
-
-        for res in &mut des{
-
-            match res{
-                Ok(raw) => {
-                    let raw: RawMessage = raw;
-                    match serde_json::from_slice(&raw.payload){
-                        Ok(chord_msg) => {
-                            let chord_msg: ChordMessage = chord_msg;
-                            stream_write = if let Some(writer) = stream_write {
-                                let to = chord_msg.from.clone();
-                                
-                                channel.send(ProcessMessage::Control(ControlMessage::IncomingConnection(writer, to))).await;
-                                None
-                            }else{None};
-                            let proc_msg = ProcessMessage::Message(chord_msg);
-                            channel.send(proc_msg).await;
-                            
-                        },
-                        Err(e) => {
-                            // Invalid message
-                        },
+                        ChordMessage::GetPredecessor {from} => todo!(),
+                        ChordMessage::Predecessor { of, is } => todo!(),
+                        // respond to notify operation
+                        ChordMessage::Notify(id) => Some(ChordOperation::Notified(id)),
+                        ChordMessage::Ping { from } => Some(ChordOperation::Ping(from.clone())),
+                        ChordMessage::Pong => None,
                     }
-                },
-                Err(e) => {
-                    eprintln!("Encountered deserialization error: {}", e);
-                },
+                }).await;
+
+                match node{
+                    Ok(node) => { // Got node, send to processor
+                        channel.send(ChordOperation::IncomingConnection(node)).await;
+                    },
+                    Err(_) => {}, // Connection failed, drop
+                };
+                
             }
-
         }
-        buffer = buffer[des.byte_offset()..].to_vec();
-
     }
-
 }
+
 
 struct ProcessorData{
+    // Core data
+    connections: BTreeMap<CircularId, Node>,
     self_id: CircularId,
-    finger_table: Vec<(CircularId, OwnedWriteHalf)>,
-    incoming_connections: BTreeMap<CircularId, OwnedWriteHalf>,
+    predecessor: Option<CircularId>,
+    finger_table: Vec<CircularId>,
+    
+    
+
+    // Operations channel
+    channel_rx: Receiver<ChordOperation>,
+    channel_tx: Sender<ChordOperation>,
+
+    // Broadcast items
+    broadcast_ids: Vec<u32>,
+    broadcast_channel_tx: Sender<String>,
+
+    // Data storage
     datastore: BTreeMap<CircularId, Vec<u8>>,
 }
 
-async fn message_processor(mut channel: Receiver<ProcessMessage>){
-    let mut data = ProcessorData{
-        self_id: CircularId::rand(),
-        finger_table: Vec::new(),
-        incoming_connections: BTreeMap::new(),
-        datastore: BTreeMap::new(),
-    };
-    while let Some(message) = channel.recv().await{
-        // println!("Processing message...");
-        // add forward code here
-        match message{
-            ProcessMessage::Control(cm) => {process_control(cm, &mut data).await;},
-            ProcessMessage::Message(pm) =>{process_chord(pm, &mut data).await;},
-            ProcessMessage::Broadcast(bm) => {},
-        }
-    }
-}
+impl ProcessorData{
+    fn new (self_id: CircularId, broadcast_channel_tx: Sender<String>) -> ProcessorData{
+        let (channel_tx, channel_rx) = channel::<ChordOperation>(50);
+        let mut connections = BTreeMap::new();
+        connections.insert(self_id.clone(), Node::Local{id:self_id.clone()});
+        ProcessorData{
+            connections,
+            self_id,
+            predecessor: None,
+            finger_table: Vec::new(),
+            
+            
+            broadcast_ids: Vec::new(),
+            broadcast_channel_tx,
 
-async fn process_control(cm: ControlMessage, data: &mut ProcessorData){
-    match cm{
-        ControlMessage::IncomingConnection(writer, address) => {
-            data.incoming_connections.insert(address, writer);
-        },
-        ControlMessage::Stabilize => {
-            // ask successor for its pred. if that node is closer than current successor, update successor
-            let succ = &data.finger_table[0];
-        },
-        ControlMessage::Notify => {
-            // notify successor about us!
-            let succ = &data.finger_table[0];
-            // let sock = succ.1;
-            // sock.write();
+            channel_rx,
+            channel_tx,
 
-        },
-        ControlMessage::FixFingers => {
-            // for each finger, try to find the correct node to point to, then replace finger with that node.
-        },
-        ControlMessage::CheckPredecessor => {
-            // Ping predecessor to check for liveness, if dead, set to none, else is fine
-        },
-        // _ =>{},
-    }
-
-}
-async fn process_chord(cm: ChordMessage, data: &mut ProcessorData){
-    match cm.msg_type{
-        chord_msg::ChordMessageType::Lookup(ref lookup_id) => {
-            if data.finger_table.len() == 0 || lookup_id.is_between(&data.self_id, &data.finger_table[0].0){
-                let dat = data.datastore.get(lookup_id).cloned();
-                let rm = ChordMessage{from: data.self_id.clone(), channel: cm.channel, msg_type: ChordMessageType::LookupReply(lookup_id.clone(), dat)};
-                send_message(Some(&mut data.finger_table), Some(&mut data.incoming_connections), rm, cm.from).await;
-            }else{ // forward request
-                let dest = lookup_id.clone();
-                send_message(Some(&mut data.finger_table), Some(&mut data.incoming_connections), cm, dest).await;
-            }
-        },
-        chord_msg::ChordMessageType::LookupReply(_, _) => todo!(),
-    };
-}
-
-async fn send_message(
-    finger_table: Option<&mut Vec<(CircularId, OwnedWriteHalf)>>,
-    extra_connections: Option<&mut BTreeMap<CircularId, OwnedWriteHalf>>,
-    message: ChordMessage,
-    to: CircularId,
-) -> Result<(), std::io::Error>{
-
-    if let Some(connections) = extra_connections{
-        match connections.get_mut(&to){
-            Some(connection) => {
-                let raw_msg = message.into_raw(to).expect("failed to generate raw message");
-                let raw_data = serde_json::ser::to_string(&raw_msg).expect("failed to serialize raw message");
-                connection.write(raw_data.as_bytes()).await?;
-                return Ok(());
-            },
-            None => {},
+            datastore: BTreeMap::new(),
         }
     }
 
-
-    if let Some(finger_table ) = finger_table{
-        if finger_table.len() > 1{
-            let (head, tail) = finger_table.split_at_mut(1);
-            let head = &head[0];
-            for i in (0..tail.len()).rev(){
-                let node = &mut tail[i];
-                if !to.is_between(&head.0, &node.0){ // not in remaining segments, send to node
-                    let connection = &mut node.1;
-                    let raw_msg = message.into_raw(to).expect("failed to generate raw message");
-                    let raw_data = serde_json::ser::to_string(&raw_msg).expect("failed to serialize raw message");
-                    connection.write(raw_data.as_bytes()).await?;
-                    return Ok(());
-                }
-            }
-            // return fail(should only occur if we would have to send to ourselves) todo
-        }
+    async fn start(mut self) -> JoinHandle<()>{
+        // println!("Starting processor");
         
+        tokio::spawn(async move{
+            // println!("processing");
+            while let Some(operation) = self.channel_rx.recv().await{
+                // println!("Looping");
+                self.process_operation(operation).await;
+            }
+            // eprintln!("Exited processor loop");
+        })
     }
 
-    Ok(())
-}
-
-async fn chord_upkeep(channel: Sender<ProcessMessage>) -> Result<(), SendError<ProcessMessage>>{
-    let mut interval = interval(Duration::from_secs(15));
-    loop{
-        interval.tick().await;
-        channel.send(ProcessMessage::Control(ControlMessage::Stabilize)).await?;
-        channel.send(ProcessMessage::Control(ControlMessage::Notify)).await?;
-        channel.send(ProcessMessage::Control(ControlMessage::FixFingers)).await?;
-        channel.send(ProcessMessage::Control(ControlMessage::CheckPredecessor)).await?;
+    fn get_channel(&self) -> Sender<ChordOperation>{
+        self.channel_tx.clone()
     }
+
+
+
+    async fn process_operation(&mut self, operation: ChordOperation){
+        match operation{
+            ChordOperation::IncomingConnection(node) => {
+                operations::incoming_connection(self, node);
+                // match node{
+                //     Node::Local { .. } => {},
+                //     Node::Other { ref id, ..} => {
+                //         self.connections.insert(id.clone(), node);
+                //     },
+                // }
+                
+            },
+            ChordOperation::Message(msg) => {self.process_message(msg).await;},
+            ChordOperation::Forward(msg) => {self.send_raw(msg).await;},
+            ChordOperation::Broadcast(id, s) => {
+                let (should_process, id) = match id{
+                    Some(id) => { // have an id, we are forwarding/recving
+                        // need to check if we have already recieved this id
+                        let ret = !self.broadcast_ids.contains(&id);
+                        if ret { // if we have not recvd this id, send to user
+                            self.broadcast_channel_tx.send(s.clone());
+                        }
+                        (ret, id)
+                    },
+                    None => { // no id, need to create an id first
+                        println!("broadcasting {}", s.clone());
+                        (true, rand::random())
+                    },
+                };
+                if should_process {
+                    self.broadcast_ids.push(id); // mark as recvd
+                    // forward the string
+                    for (_, node) in &mut self.connections{
+                        match node {
+                            Node::Local { .. } => {},
+                            Node::Other { .. } => {
+                                node.send(ChordMessage::Broadcast{id, msg:s.clone()}).await;
+                            },
+                        }
+                    }
+
+                }
+            },
+            ChordOperation::Ping(_) => todo!(),
+            //
+
+            ChordOperation::Stabilize => {
+                // ask successor for its pred. if that node is closer than current successor, update successor
+                if let Some(successor_id) = self.finger_table.get(0){
+                    if let Some(successor) = self.connections.get(successor_id){
+                    //    successor.send(message) 
+                    }
+                }
+            },
+            ChordOperation::Notify => {
+                // notify successor about us!
+                if let Some(successor_id) = self.finger_table.get(0){
+                    if let Some(node) = self.connections.get_mut(successor_id){
+                        node.send(ChordMessage::Notify(self.self_id.clone())).await;
+                    }
+                }
+            },
+            ChordOperation::Notified(notified_id) => {
+                // if we are notified of a new predecessor, check against our curent predecessor id
+                // and update if needed
+                match &self.predecessor{
+                    Some(predecessor) => {
+                        if notified_id.is_between(&predecessor, &self.self_id){
+                            self.predecessor = Some(notified_id);
+                        }
+                        // otherwise ignore
+                    },
+                    None => {
+                        self.predecessor = Some(notified_id);
+                    },
+                }
+                
+            },
+            ChordOperation::FixFingers => {
+                // for each finger, try to find the correct node to point to, then replace finger with that node.
+            },
+            ChordOperation::CheckPredecessor => {
+                // Ping predecessor to check for liveness, if dead, set to none, else is fine
+                if let Some(predecessor) = &self.predecessor { // if we have a predecessor
+                    if let Some(node) = self.connections.get_mut(predecessor) {
+                        if let Node::Other{ last_msg , .. } = node{
+                            let x = last_msg.read().await;
+                            if x.cmp(&(Utc::now() - chrono::Duration::seconds(30) )).is_le() {
+                                // TODO: send ping
+                                drop(x);
+                                node.send(ChordMessage::Ping{from: self.self_id.clone()}).await;
+                            }
+                        }
+                    }
+                }
+            },
+            ChordOperation::Cleanup => {
+                let mut to_remove = Vec::new();
+
+                for (id, node) in &self.connections{
+                    if let Node::Other{ last_msg, .. } = node{
+                        let x = last_msg.read().await;
+                        if x.cmp(&(Utc::now() - chrono::Duration::seconds(60) )).is_le() {
+                            // TODO: close node
+                            to_remove.push(id.clone());
+                            // node.close();
+                        }
+                    }
+                }
+                for id in to_remove{
+                    if let Some(pred) = &self.predecessor{
+                        if pred.eq(&id){
+                            self.predecessor = None;
+                        }
+                    }
+                    self.connections.remove(&id);
+                }
+            },
+            ChordOperation::Predecessor(_, _) => todo!(),
+            
+            
+            
+            // ChordOperation::Control(cm) => {process_control(cm, &mut data).await;},
+            // ProcessMessage::Message(pm) =>{process_chord(pm, &mut data).await;},
+            // ProcessMessage::Broadcast(bm) => {},
+        };
+    }
+
+    async fn process_message(&mut self, msg: ChordMessage){
+
+
+    }
+
+
+    async fn send_message(&mut self, msg: ChordMessage, to: CircularId) -> Result<(), std::io::Error>{
+        let range = (Unbounded, Included(&to));
+        let node = self.connections.range_mut(range).next_back();
+        let node = match node{
+            Some((id, node)) => node,
+            None => {
+                self.connections.range_mut(..).next_back().unwrap().1
+            },
+        };
+
+        node.send(msg);
+
+        Ok(())
+    }
+
+    async fn send_raw(&mut self, msg: RawMessage) -> Result<(), std::io::Error>{
+        let range = (Unbounded, Included(&msg.to));
+        let node = self.connections.range_mut(range).next_back();
+        let node = match node{
+            Some((_id, node)) => node,
+            None => {
+                self.connections.range_mut(..).next_back().unwrap().1
+            },
+        };
+
+        node.send_raw(msg);
+
+        Ok(())
+    }
+
+
 }
 
 #[cfg(test)]

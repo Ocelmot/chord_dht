@@ -1,8 +1,6 @@
 use serde::{Serialize, Deserialize};
-use tokio::net::{tcp::OwnedWriteHalf};
 
-use crate::circular_id::CircularId;
-
+use crate::{circular_id::CircularId, node::Node};
 
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -11,35 +9,18 @@ pub struct RawMessage{
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug)]
-pub enum ProcessMessage{
-    Control(ControlMessage),
-    Message(ChordMessage),
-    Broadcast(Vec<u8>),
-}
-
-#[derive(Debug)]
-pub enum ControlMessage{
-    IncomingConnection(OwnedWriteHalf, CircularId),
-
-    Stabilize,
-    Notify,
-    FixFingers,
-    CheckPredecessor
-}
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ChordMessage{
-    pub from: CircularId,
-    pub channel: u64,
-    pub msg_type: ChordMessageType,
+pub enum ChordMessage{
+    Introduction{from: CircularId},
+    Data{from: CircularId, data: Vec<i8>},
+    Broadcast{id: u32, msg: String},
 
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum ChordMessageType{
-    Lookup(CircularId),
-    LookupReply(CircularId, Option<Vec<u8>>)
+    GetPredecessor{from: CircularId},
+    Predecessor{of: CircularId, is: CircularId},
+    Notify(CircularId),
+    Ping{from: CircularId},
+    Pong,
 }
 
 impl ChordMessage{
@@ -53,10 +34,19 @@ impl ChordMessage{
 }
 
 
+#[derive(Debug)]
+pub enum ChordOperation{
+    IncomingConnection(Node),
+    Message(ChordMessage),
+    Forward(RawMessage),
+    Broadcast(Option<u32>, String),
+    Ping(CircularId),
 
-
-
-pub struct ExternMessage{
-
-
+    Stabilize,
+    Predecessor(CircularId, CircularId),
+    Notify,
+    Notified(CircularId),
+    FixFingers,
+    CheckPredecessor,
+    Cleanup,
 }
