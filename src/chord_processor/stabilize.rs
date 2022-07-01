@@ -1,7 +1,7 @@
-use crate::{ChordProcessor, chord_id::ChordId};
+use crate::{ChordProcessor, chord_id::ChordId, adaptor::ChordAdaptor};
 
 
-impl<I: ChordId> ChordProcessor<I>{
+impl<A, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> ChordProcessor<A, I, ADAPTOR>{
 
     /// Stabilize routine has 3 operations, and 2 messages:
     /// 1. stabilize - ask successor for its predecessor. Initiated by timer.

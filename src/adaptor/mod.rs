@@ -1,5 +1,6 @@
 use crate::{chord_processor::{ProcessorId, ChordOperation, ChordOperationResult}, chord_id::ChordId};
-use tokio::{task::JoinHandle, sync::mpsc::Sender};
+
+use tokio::{task::JoinHandle, sync::mpsc::{Sender, Receiver}};
 use serde::{Serialize, Deserialize};
 
 
@@ -27,8 +28,8 @@ pub enum ChordMessage<I: ChordId>{
 /// Convert the results of the chord operation to a ChordMessage.
 /// This conversion can return None if a particular result
 /// should not be made public.
-impl<I: ChordId> From<ChordOperationResult<I>> for Option<ChordMessage<I>>{
-    fn from(result: ChordOperationResult<I>) -> Self {
+impl<A, I: ChordId> From<ChordOperationResult<A, I>> for Option<ChordMessage<I>>{
+    fn from(result: ChordOperationResult<A, I>) -> Self {
         match result {
 			_ => None,
         }
@@ -37,7 +38,7 @@ impl<I: ChordId> From<ChordOperationResult<I>> for Option<ChordMessage<I>>{
 
 
 /// Convert incoming messages into the appropriate operations
-impl<I: ChordId> From<ChordMessage<I>> for ChordOperation<I>{
+impl<A, I: ChordId> From<ChordMessage<I>> for ChordOperation<A, I>{
     fn from(message: ChordMessage<I>) -> Self {
         match message {
             ChordMessage::Introduction { from } => todo!(),
@@ -52,14 +53,17 @@ impl<I: ChordId> From<ChordMessage<I>> for ChordOperation<I>{
 }
 
 
-pub trait ChordAdaptor<A, I: ChordId>{
+pub trait ChordAdaptor<A, I: ChordId>: Send + 'static{
 
 	fn new() -> Self;
 
 	// incoming connections
-	fn listen_handler(&self, listen_addr: A, channel: Sender<(ProcessorId<I>, ChordOperation<I>)>) -> JoinHandle<()>;
+	fn listen_handler(&self, listen_addr: A, channel: Sender<(ProcessorId<I>, ChordOperation<A, I>)>) -> JoinHandle<()>;
 
 	// create outgoing connection
-	// fn connect();
+	fn connect(&self, addr: A, id: Option<I>, channel_from_connection: Sender<(ProcessorId<I>, ChordOperation<A, I>)>) -> Sender<ChordOperationResult<A, I>>;
+
+    // connect at an associate
+    fn associate_connect(addr: A) -> (Sender<ChordOperation<A, I>>, Receiver<ChordOperationResult<A, I>>);
 }
 
