@@ -17,3 +17,4 @@ serde = { version = "1.0.132", features = ["derive"] }
 
 chrono = "0.4.19"
 
+tracing = "0.1"

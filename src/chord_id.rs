@@ -1,16 +1,16 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt::Debug};
 use serde::{Serialize, Deserialize};
 
-pub trait ChordId: Clone + Ord + Sync + Send + Serialize + for<'de> Deserialize<'de> + 'static{
+pub trait ChordId: Clone + Ord + Sync + Send + Serialize + for<'de> Deserialize<'de> + 'static + Debug{
 	fn wrap_point() -> Self;
 	fn calculate_finger(&self, index :u32) -> Self;
 		
-	/// Tests if self is in the range [lower, upper)
+	/// Tests if self is in the range (lower, upper]
 	fn is_between(&self, lower: &Self, upper: &Self) -> bool {
 		match lower.cmp(upper){
-			Ordering::Less => (self >= lower) && (self < upper),
+			Ordering::Less => (self > lower) && (self <= upper),
 			Ordering::Equal => self == lower,
-			Ordering::Greater => (self >= lower) || (self < upper),
+			Ordering::Greater => (self > lower) || (self <= upper),
 		}
 	}
 }

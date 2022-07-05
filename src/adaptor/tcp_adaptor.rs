@@ -1,26 +1,31 @@
-use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}, future::Future};
+use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}};
 
-use super::{ChordAdaptor, ChordMessage};
-use crate::{ChordId, chord_processor::{ProcessorId, ChordOperation, ChordOperationResult}};
+use super::{ChordAdaptor, Message, AssociateClient};
+use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage, PublicMessage}}};
 
 use serde_json::Deserializer;
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
 
 
-
-pub struct TCPAdaptor{
+#[derive(Debug)]
+pub struct TCPAdaptor<A, I>{
+	id: I,
+	addr: A,
 	next_associate_id: Arc<AtomicU32>,
+
 }
 
-impl<A: ToSocketAddrs + Send + 'static, I: ChordId> ChordAdaptor<A, I> for TCPAdaptor{
+impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdaptor<A, I>{
 	
-	fn new() -> Self{
+	fn new(id: I, addr: A) -> Self{
 		Self{
-			next_associate_id: Arc::new(AtomicU32::new(1)),
+			id,
+			addr,
+			next_associate_id: Arc::new(AtomicU32::new(10000)),
 		}
 	}
 
-	fn listen_handler(&self, listen_addr: A, channel: Sender<(ProcessorId<I>, ChordOperation<A, I>)>) -> JoinHandle<()> {
+	fn listen_handler(&self, listen_addr: A, channel: Sender<(ProcessorId<I>, Message<A, I>)>) -> JoinHandle<()> {
 		let next_associate_id = self.next_associate_id.clone();
 		tokio::spawn(async move{
 			let listener = TcpListener::bind(listen_addr).await.expect("listener should not fail");
@@ -28,49 +33,54 @@ impl<A: ToSocketAddrs + Send + 'static, I: ChordId> ChordAdaptor<A, I> for TCPAd
 				match listener.accept().await {
 					Err(e) => { 
 						/* TODO: probably shut down listener */
-						eprintln!("Encountered an error in accept: {}", e)
+						panic!("Encountered an error in accept: {}", e)
 					},
 					Ok((stream, _)) => {
-						let mut ch_stream = TcpChordStream::<I>::new(stream);
-						let id = match ch_stream.peek().await {
-							Ok(ChordMessage::Introduction { from }) => {
-								ProcessorId::Member(from.clone())
+						let mut ch_stream = TcpChordStream::<A, I>::new(stream);
+						let (inner_tx, inner_rx) = mpsc::channel(50);
+						let (id, message) = match ch_stream.peek().await {
+							Ok(PublicMessage::Introduction{id, addr}) => {
+								let res = (ProcessorId::Member(id.clone()), PrivateMessage::RegisterMember { addr:addr.clone(), conn: inner_tx });
+								ch_stream.read().await;
+								res
 							},
 							_ => {
 								let next_id = next_associate_id.fetch_add(1, Ordering::SeqCst);
-								ProcessorId::Associate(next_id)
+								(ProcessorId::Associate(next_id), PrivateMessage::RegisterAssociate { conn: inner_tx })
 							}
 						};
-						let (inner_tx, mut inner_rx) = mpsc::channel(50);
+						
 						Self::adapt(id.clone(), ch_stream, channel.clone(), inner_rx);
-						channel.send((id.clone(), ChordOperation::RegisterConnection { conn: inner_tx })).await;
+						channel.send((id.clone(), Message::Private(message))).await;
 					}
 				}
 			}
 		})
     }
 
-	fn connect(&self, addr: A, id: Option<I>, channel_from_connection: Sender<(ProcessorId<I>, ChordOperation<A, I>)>) -> Sender<ChordOperationResult<A, I>> {
-		let (inner_tx, mut inner_rx) = mpsc::channel(50);
+	fn connect(&self, addr: A, id: Option<I>, channel_from_connection: Sender<(ProcessorId<I>, Message<A, I>)>) -> Sender<PublicMessage<A, I>> {
+		let (inner_tx, inner_rx) = mpsc::channel(50);
 		let next_associate_id = self.next_associate_id.clone();
 		tokio::spawn(async move {
 			let conn = TcpStream::connect(addr).await.expect("Failed to connect");
-			let stream = TcpChordStream::<I>::new(conn);
+			let stream = TcpChordStream::<A, I>::new(conn);
 			let processor_id = match id {
 				Some(id) => ProcessorId::Member(id),
 				None => ProcessorId::Associate(next_associate_id.fetch_add(1, Ordering::SeqCst)),
 			};
 			TCPAdaptor::adapt(processor_id, stream, channel_from_connection, inner_rx);
+			
 		});
+		
 		return inner_tx;
 	}
 
-	fn associate_connect(addr: A) -> (Sender<ChordOperation<A, I>>, Receiver<ChordOperationResult<A, I>>) {
+	fn associate_client(addr: A) -> AssociateClient<A, I> {
 		let (to_tx, mut to_rx) = mpsc::channel(50);
-		let (from_tx, mut from_rx) = mpsc::channel(50);
+		let (from_tx, from_rx) = mpsc::channel(50);
 		tokio::spawn(async move{
 			let stream = TcpStream::connect(addr).await.expect("failed to connect");
-			let mut stream = TcpChordStream::<I>::new(stream);
+			let mut stream = TcpChordStream::<A, I>::new(stream);
 			loop{
 				// select on reading from stream and reading from created channel
 				select! {
@@ -78,32 +88,35 @@ impl<A: ToSocketAddrs + Send + 'static, I: ChordId> ChordAdaptor<A, I> for TCPAd
 					incoming = stream.read() => {
 						match incoming{
 							Ok(incoming) => {
-								from_tx.send(incoming.into()).await;
+								
+								from_tx.send(incoming).await;
 							},
-							Err(_) => todo!("Failed to read from incoming data stream"),
+							Err(_) => break,
 						}
 					},
 					// if created channel completes, write to stream
 					outgoing = to_rx.recv() => {
+						
 						match outgoing {
 							Some(chord_result) => {
-								if let Some(msg) = chord_result.into(){
+								println!("about to send {:?}", chord_result);
+								if let Some(msg) = Option::<PublicMessage<A, I>>::from(chord_result){
 									stream.write(msg).await;
 								}
 							},
-							None => todo!("Failed to read message from processor"),
+							None => break,
 						}
 					},
 				}
 			}
 		});
-		(to_tx, from_rx)
+		AssociateClient::new(to_tx, from_rx)
 	}
 }
 
 
-impl TCPAdaptor{
-	fn adapt<A: Send + 'static, I: ChordId>(id: ProcessorId<I>, mut stream: TcpChordStream<I>, channel_to_processor: Sender<(ProcessorId<I>, ChordOperation<A, I>)>, mut channel_from_processor: Receiver<ChordOperationResult<A, I>>){
+impl<A: ChordAddress, I: ChordId> TCPAdaptor<A, I>{
+	fn adapt(id: ProcessorId<I>, mut stream: TcpChordStream<A, I>, channel_to_processor: Sender<(ProcessorId<I>, Message<A, I>)>, mut channel_from_processor: Receiver<PublicMessage<A, I>>){
 		tokio::spawn(async move{
 			loop{
 				// select on reading from stream and reading from created channel
@@ -112,20 +125,18 @@ impl TCPAdaptor{
 					incoming = stream.read() => {
 						match incoming{
 							Ok(incoming) => {
-								channel_to_processor.send((id.clone(), incoming.into())).await;
+								channel_to_processor.send((id.clone(), Message::Public(incoming))).await;
 							},
-							Err(_) => todo!("Failed to read from incoming data stream"),
+							Err(_) => break,
 						}
 					},
 					// if created channel completes, write to stream
 					outgoing = channel_from_processor.recv() => {
 						match outgoing {
-							Some(chord_result) => {
-								if let Some(msg) = chord_result.into(){
-									stream.write(msg).await;
-								}
+							Some(msg) => {
+								stream.write(msg).await;
 							},
-							None => todo!("Failed to read message from processor"),
+							None => break,
 						}
 					},
 				}
@@ -135,12 +146,12 @@ impl TCPAdaptor{
 }
 
 
-struct TcpChordStream<I: ChordId>{
+struct TcpChordStream<A: ChordAddress, I: ChordId>{
 	stream: TcpStream,
 	buffer: Vec<u8>,
-	peaked: Option<ChordMessage<I>>
+	peaked: Option<PublicMessage<A, I>>
 }
-impl<I: ChordId> TcpChordStream<I>{
+impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 	pub fn new(stream: TcpStream) -> Self{
 		Self{
 			stream,
@@ -149,11 +160,13 @@ impl<I: ChordId> TcpChordStream<I>{
 		}
 	}
 
-	async fn read(&mut self) -> Result<ChordMessage<I>>{
+	async fn read(&mut self) -> Result<PublicMessage<A, I>>{
 		if let Some(msg) = self.peaked.take() {
+			// println!("Returning peaked message");
 			return Ok(msg);
 		}
 		loop{
+			// println!("about to deserialize from buffer");
 			// attempt to deserialize buffer
 			let mut deserializer = Deserializer::from_slice(self.buffer.as_slice()).into_iter();
 
@@ -191,12 +204,12 @@ impl<I: ChordId> TcpChordStream<I>{
 		}
 	}
 
-	async fn write(&mut self, msg: ChordMessage<I>){
+	async fn write(&mut self, msg: PublicMessage<A, I>){
 		let raw_data = serde_json::ser::to_string(&msg).expect("Failed to serialize struct");
 		self.stream.write(raw_data.as_bytes()).await;
 	}
 
-	async fn peek(&mut self) -> Result<&mut ChordMessage<I>>{
+	async fn peek(&mut self) -> Result<&mut PublicMessage<A, I>>{
 		let msg = self.read().await?;
 		self.peaked = Some(msg);
 		Ok(self.peaked.as_mut().unwrap())
