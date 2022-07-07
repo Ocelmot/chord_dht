@@ -3,6 +3,7 @@ use serde::{Serialize, Deserialize};
 
 pub trait ChordId: Clone + Ord + Sync + Send + Serialize + for<'de> Deserialize<'de> + 'static + Debug{
 	fn wrap_point() -> Self;
+	fn next_index(prev_index: u32) -> u32;
 	fn calculate_finger(&self, index :u32) -> Self;
 		
 	/// Tests if self is in the range (lower, upper]
@@ -13,6 +14,7 @@ pub trait ChordId: Clone + Ord + Sync + Send + Serialize + for<'de> Deserialize<
 			Ordering::Greater => (self > lower) || (self <= upper),
 		}
 	}
+
 }
 
 
@@ -20,11 +22,17 @@ impl ChordId for u32{
 	fn wrap_point() -> Self {
 		u32::max_value()
 	}
-
+	fn next_index(prev_index: u32) -> u32 {
+		let mut next_index = prev_index + 1;
+		if next_index > 32 {
+			next_index = 1;
+		}
+		next_index
+	}
 	fn calculate_finger(&self, index :u32) -> Self {
-        todo!()
-    }
-
+		let offset = 2u32.pow(index - 1);
+		self.wrapping_add(offset)
+	}
 }
 
 

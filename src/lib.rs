@@ -29,3 +29,5 @@ pub mod associate;
 
 pub trait ChordAddress: Clone + Send + Sync + 'static + Debug + Serialize + for<'de> Deserialize<'de>{}
 impl<T: Clone + Send + Sync + 'static + Debug + Serialize + for<'de> Deserialize<'de>> ChordAddress for T{}
+
+

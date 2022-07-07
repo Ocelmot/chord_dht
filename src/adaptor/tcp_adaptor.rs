@@ -3,7 +3,7 @@ use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}};
 use super::{ChordAdaptor, Message, AssociateClient};
 use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage, PublicMessage}}};
 
-use serde_json::Deserializer;
+use serde_json::{Deserializer, error::Category};
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
 
 
@@ -17,11 +17,11 @@ pub struct TCPAdaptor<A, I>{
 
 impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdaptor<A, I>{
 	
-	fn new(id: I, addr: A) -> Self{
+	fn new(id: I, addr: A, next_associate_id: Arc<AtomicU32>) -> Self{
 		Self{
 			id,
 			addr,
-			next_associate_id: Arc::new(AtomicU32::new(10000)),
+			next_associate_id,
 		}
 	}
 
@@ -56,15 +56,15 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 				}
 			}
 		})
-    }
+	}
 
-	fn connect(&self, addr: A, id: Option<I>, channel_from_connection: Sender<(ProcessorId<I>, Message<A, I>)>) -> Sender<PublicMessage<A, I>> {
+	fn connect(&self, addr: A, as_id: Option<I>, channel_from_connection: Sender<(ProcessorId<I>, Message<A, I>)>) -> Sender<PublicMessage<A, I>> {
 		let (inner_tx, inner_rx) = mpsc::channel(50);
 		let next_associate_id = self.next_associate_id.clone();
 		tokio::spawn(async move {
 			let conn = TcpStream::connect(addr).await.expect("Failed to connect");
 			let stream = TcpChordStream::<A, I>::new(conn);
-			let processor_id = match id {
+			let processor_id = match as_id {
 				Some(id) => ProcessorId::Member(id),
 				None => ProcessorId::Associate(next_associate_id.fetch_add(1, Ordering::SeqCst)),
 			};
@@ -171,17 +171,21 @@ impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 			let mut deserializer = Deserializer::from_slice(self.buffer.as_slice()).into_iter();
 
 			// if successful, truncate buffer, return deserialized struct
-	        for result in &mut deserializer{
+			for result in &mut deserializer{
 				match result{
 					Ok(msg) => {
 						self.buffer = self.buffer[deserializer.byte_offset()..].to_vec();
 						return Ok(msg);
 					},
+					Err(ref e) if e.classify() == Category::Eof => {
+						break; // if we have encountered an EOF, more information may arrive later
+					},
 					Err(e) => {
 						eprintln!("Encountered deserialization error: {}", e);
+						eprintln!("\t Deserialization buffer: {:?}", String::from_utf8(self.buffer.clone()).unwrap());
 					},
 				}
-        	}
+			}
 			
 			// else, read bytes into buffer
 			let mut tmp_buf = vec![0; 1024];

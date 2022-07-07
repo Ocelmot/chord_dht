@@ -37,6 +37,7 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	adaptor: ADAPTOR,
 	members: BTreeMap<I, (A, Sender<PublicMessage<A, I>>)>,
 	associates: BTreeMap<u32, Sender<PublicMessage<A, I>>>,
+	finger_index: u32,
 	next_associate_id: Arc<AtomicU32>,
 
 	// Operations channel
@@ -48,7 +49,8 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 	pub fn new (self_addr: A, self_id: I) -> Self{
 		let (channel_tx, channel_rx) = channel(50);
-		let adaptor = ADAPTOR::new(self_id.clone(), self_addr.clone());
+		let next_associate_id = Arc::new(AtomicU32::new(1));
+		let adaptor = ADAPTOR::new(self_id.clone(), self_addr.clone(), next_associate_id.clone());
 		let connections = BTreeMap::new();
 
 		Chord{
@@ -61,7 +63,8 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			adaptor,
 			members: connections,
 			associates: BTreeMap::new(),
-			next_associate_id: Arc::new(AtomicU32::new(1)),
+			finger_index: 1,
+			next_associate_id,
 
 			// Operations channel
 			channel_rx,
@@ -104,7 +107,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			loop{
 				interval.tick().await;
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::Stabilize.into())).await;
-				// stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::FixFingers.into())).await;
+				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::FixFingers.into())).await;
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::Cleanup.into())).await;
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::CheckPredecessor.into())).await;
 			}
@@ -155,7 +158,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 	#[instrument]
 	async fn send_result(&mut self, id: ProcessorId<I>, result: PublicMessage<A, I>){
-		info!("Sending result");
+		// info!("Sending result");
 		match id{
 			ProcessorId::Member(id) => {
 				match self.members.get_mut(&id){
@@ -173,7 +176,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 					None => {},
 				}
 			},
-    		ProcessorId::Internal => {}, // Messages sent to the internal channel are ignored.
+			ProcessorId::Internal => {}, // Messages sent to the internal channel are ignored.
 		}
 	}
 
@@ -198,33 +201,35 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		let x = self.members.range((Excluded(self.self_id.clone()), Unbounded)).next();
 		if let Some((_, ch)) = x {
 			channel = Some(ch);
+		}else{
+			// test lower section of btree if value not found in upper
+			let x = self.members.range((Unbounded, Excluded(self.self_id.clone()))).next();
+			if let Some((_, ch)) = x {
+				channel = Some(ch);
+			}
 		}
 
-		// test lower section of btree
-		let x = self.members.range((Unbounded, Excluded(self.self_id.clone()))).next();
-		if let Some((_, ch)) = x {
-			channel = Some(ch);
-		}
 
 		match channel {
-			Some((_, channel)) => {
+			Some((id, channel)) => {
+				// println!("routing packet to {:?}", id);
 				channel.send(PublicMessage::Route{packet}).await;
 			},
 			None => {}, // Could not find any connection, data must drop
 		}
 	}
 
-	fn successor(&self) -> Option<&I> {
+	fn successor(&self) -> Option<(&I, &A)> {
 		// test upper section of btree
 		let x = self.members.range((Excluded(self.self_id.clone()), Unbounded)).next();
-		if let Some((id, _)) = x {
-			return Some(id);
+		if let Some((id, (addr, _))) = x {
+			return Some((id, addr));
 		}
 
 		// test lower section of btree
 		let x = self.members.range((Unbounded, Excluded(self.self_id.clone()))).next();
-		if let Some((id, _)) = x {
-			return Some(id);
+		if let Some((id, (addr, _))) = x {
+			return Some((id, addr));
 		}
 
 		// could not find

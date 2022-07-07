@@ -9,39 +9,41 @@ use super::ProcessorId;
 
 #[derive(Debug)]
 pub enum Message<A: ChordAddress, I: ChordId>{
-    Private(PrivateMessage<A, I>),
-    Public(PublicMessage<A, I>),
+	Private(PrivateMessage<A, I>),
+	Public(PublicMessage<A, I>),
 }
 
 #[derive(Debug)]
 pub enum PrivateMessage<A: ChordAddress, I: ChordId>{
-    // Internal Operations
+	// Internal Operations
 	RegisterMember{addr: A, conn: Sender<PublicMessage<A, I>>},
-    RegisterAssociate{conn: Sender<PublicMessage<A, I>>},
+	RegisterAssociate{conn: Sender<PublicMessage<A, I>>},
 
-    Stabilize,
-    FixFingers,
-    CheckPredecessor,
-    Cleanup,
+	Stabilize,
+	FixFingers,
+	CheckPredecessor,
+	Cleanup,
 }
 
 impl<A: ChordAddress, I: ChordId> From<PrivateMessage<A, I>> for Message<A, I> {
-    fn from(msg: PrivateMessage<A, I>) -> Self {
-        Message::Private(msg)
-    }
+	fn from(msg: PrivateMessage<A, I>) -> Self {
+		Message::Private(msg)
+	}
 }
 
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub enum PublicMessage<A: ChordAddress, I: ChordId>{
-    Introduction{id: I, addr: A},
+	Introduction{id: I, addr: A},
 
 	// State Operations
 	GetID,
 	ID{id: I},
 	GetPredecessor,
 	Predecessor{pred: Option<(I, A)>},
+	GetSuccessor,
+	Successor{succ: Option<(I, A)>},
 
 	
 
@@ -50,18 +52,18 @@ pub enum PublicMessage<A: ChordAddress, I: ChordId>{
 	GetSuccessorOf{id: I},
 	SuccessorOf{id: I, addr: A},
 
-    Notify,
+	Notify,
 
 	
 	
 	Error{msg: String},
-    Debug{msg: String},
+	Debug{msg: String},
 }
 
 impl<A: ChordAddress, I: ChordId> From<PublicMessage<A, I>> for Message<A, I> {
-    fn from(msg: PublicMessage<A, I>) -> Self {
-        Message::Public(msg)
-    }
+	fn from(msg: PublicMessage<A, I>) -> Self {
+		Message::Public(msg)
+	}
 }
 
 
@@ -82,24 +84,25 @@ pub struct Packet<A: ChordAddress, I: ChordId>{
 pub enum PacketType<A: ChordAddress, I: ChordId>{
 	GetSuccessorOf{id: I},
 	SuccessorOf{id: I, addr: A},
+	Dialback{id: I, addr: A},
 	Error{msg: String}
 }
 
 
 impl<A: ChordAddress, I: ChordId> Packet<A, I>{
-    pub fn new(to: I, from: I, channel: ProcessorId<I>, exact: bool, packet_type: PacketType<A, I>) -> Self {
-        Self{
-            to,
-            from,
-            channel,
-            exact,
-            checksum: 50, // temp value
-            packet_type,
-        }
-    }
+	pub fn new(to: I, from: I, channel: ProcessorId<I>, exact: bool, packet_type: PacketType<A, I>) -> Self {
+		Self{
+			to,
+			from,
+			channel,
+			exact,
+			checksum: 50, // temp value
+			packet_type,
+		}
+	}
 
-    pub fn reply_with(&self, from: &I, packet_type: PacketType<A, I>) -> Self{
-        Self{
+	pub fn reply_with(&self, from: &I, packet_type: PacketType<A, I>) -> Self{
+		Self{
 			to: self.from.clone(),
 			from: from.clone(),
 			channel: self.channel.clone(),
@@ -107,7 +110,7 @@ impl<A: ChordAddress, I: ChordId> Packet<A, I>{
 			checksum: self.checksum,
 			packet_type,
 		}
-    }
+	}
 }
 
 
