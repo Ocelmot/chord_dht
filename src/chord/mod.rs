@@ -9,7 +9,8 @@ use tokio::time::interval;
 use serde::{Serialize, Deserialize};
 
 
-pub mod message;
+pub(crate) mod message;
+
 use message::Message;
 use tracing::{info, instrument};
 
@@ -18,14 +19,23 @@ mod public_ops;
 
 use self::message::{PacketType, Packet, PrivateMessage, PublicMessage};
 
+/// An internal id associated with channels to determine the relationship of
+/// that channel to the node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProcessorId<M>{
+	/// Represents an internal message that should not be exposed.
 	#[serde(skip)]
 	Internal,
+	/// Represents a connection to or from another node with the provided id.
 	Member(M),
+	/// A connection that may query and recieve responses, but is not part of
+	/// the chord itself and cannot respond to queries or route requests.
 	Associate(u32),
 }
 
+/// The Chord itself. This struct acts like a builder in that it is created
+/// and modified before being consumed by the start method which then
+/// returns another type, ChordHandle.
 #[derive(Debug)]
 pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	// Core data
@@ -47,6 +57,9 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 
 impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPTOR>{
 
+	/// Creates a new Chord instance with the provided id and address.
+	/// The address will be passed to the adaptor to function as the
+	/// listen address.
 	pub fn new (self_addr: A, self_id: I) -> Self{
 		let (channel_tx, channel_rx) = channel(50);
 		let next_associate_id = Arc::new(AtomicU32::new(1));
@@ -72,6 +85,8 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		}
 	}
 
+	/// Gets an AssociateChannel connected to this node. The channel will not
+	/// return any results until the node is started.
 	pub async fn get_associate(&self) -> AssociateChannel<A, I>{
 
 		let associate_id = self.next_associate_id.fetch_add(1, Ordering::SeqCst);
@@ -84,6 +99,9 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		AssociateChannel::new(associate_id, to, from, next_associate_id)
 	}
 
+	/// Starts the node. This will take ownership of the Chord and return a ChordHandle.
+	/// If passed Some(Address) the node will try to join that chord. Otherwise
+	/// it will be a new chord ready to be joined.
 	pub async fn start(mut self, join_addr: Option<A>) -> ChordHandle<A, I> {
 		// panic!("listening on: {:?}, joining to: {:?}", self.self_addr, join_addr);
 		// if join_addr is not None, then connect and find our successor
@@ -251,7 +269,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 
 
-
+/// A ChordHandle represents a connection to a started Chord.
 pub struct ChordHandle<A: ChordAddress, I: ChordId>{
 	listener_handle: JoinHandle<()>,
 	maintenance_handle: JoinHandle<()>,
@@ -261,6 +279,7 @@ pub struct ChordHandle<A: ChordAddress, I: ChordId>{
 }
 
 impl<A: ChordAddress, I: ChordId> ChordHandle<A, I> {
+	/// Get a new AssociateChannel connected to the underlying node.
 	pub async fn get_associate(&self) -> AssociateChannel<A, I>{
 		self.associate_channel.duplicate().await
 	}

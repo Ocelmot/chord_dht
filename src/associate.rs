@@ -5,7 +5,8 @@ use tracing::{instrument, info};
 
 use crate::{chord_id::ChordId, ChordAddress, chord::{message::{Message, PublicMessage, PrivateMessage}, ProcessorId}};
 
-
+/// Connects to a local chord node as an associate to relay requests and responses.
+/// 
 pub struct AssociateChannel<A: ChordAddress, I: ChordId>{
 	to: Sender<(ProcessorId<I>, Message<A, I>)>,
 	from: Receiver<PublicMessage<A, I>>,
@@ -16,7 +17,7 @@ pub struct AssociateChannel<A: ChordAddress, I: ChordId>{
 
 impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 
-	pub fn new(associate_id:u32, to: Sender<(ProcessorId<I>, Message<A, I>)>, from: Receiver<PublicMessage<A, I>>, next_associate_id: Arc<AtomicU32>) -> Self{
+	pub(crate) fn new(associate_id:u32, to: Sender<(ProcessorId<I>, Message<A, I>)>, from: Receiver<PublicMessage<A, I>>, next_associate_id: Arc<AtomicU32>) -> Self{
 		info!("creating new associate. new id is {}", associate_id);
 		AssociateChannel {
 			to,
@@ -26,6 +27,11 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 		}
 	}
 
+	/// Create a new AssociateChannel from this one,
+	/// that is connected to the same local chord node.
+	/// 
+	/// The new AssociateChannel will not share its internal channel
+	/// or id with the one it was duplicated from.
 	#[instrument(skip_all)]
 	pub async fn duplicate(&self) -> Self {
 		
@@ -42,11 +48,20 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 	}
 
 
-
+	/// Send an AssociateRequest directly.
+	/// 
+	/// The chord's response can be recieved later via the recv_op() method.
+	/// If multiple requests are made, their responses may arrive in any
+	/// order.
 	pub async fn send_op(&self, msg: AssociateRequest<A, I>) {
 		self.to.send((ProcessorId::Associate(self.associate_id), msg.into())).await;
 	}
 
+	/// Receive an AssociateResponse directly.
+	/// 
+	/// Receive a response from the chord.
+	/// If multiple requests have been sent, the response received may be a
+	/// response to any outstanding request.
 	pub async fn recv_op(&mut self) -> Option<AssociateResponse<A, I>>{
 		loop{
 			let limit = tokio::time::Duration::from_secs(10);
@@ -67,18 +82,24 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 
 
 
-
-	
-
-
+/// Requests that can be sent to the chord via an associate connection.
 pub enum AssociateRequest<A, I: ChordId>{
+	/// Request the connected node's id
 	GetId,
+	/// Request the connected node's optional predecessor
 	GetPredecessor,
+	/// Request the connected node's optional successor
 	GetSuccessor,
 
-	GetSuccessorOf{id: I},
+	/// Request the successor of id
+	GetSuccessorOf{
+		/// The id to find the successor of
+		id: I
+	},
 
+	/// Request debug information
 	Debug,
+	#[doc(hidden)]
 	Marker{data: PhantomData<A>},
 }
 
@@ -102,16 +123,52 @@ impl<A: ChordAddress, I: ChordId> From<AssociateRequest<A, I>> for Message<A, I>
 	}
 }
 
+/// Contains the responses to requests represented by AssociateRequest.
 #[derive(Debug)]
 pub enum AssociateResponse<A, I: ChordId>{
-	Id{id: I},
-	Predecessor{id: Option<(I, A)>},
-	Successor{id: Option<(I, A)>},
-
-	SuccessorOf{id: I, addr: A},
+	/// The id of the connected node.
+	Id{
+		/// The returned id.
+		id: I
+	},
 	
-	Error{msg: String},
-	Debug{msg: String},
+	/// The predecessor of the connected node.
+	Predecessor{
+		/// An optional tuple of id and address,
+		/// or None if the node has no predecessor.
+		id: Option<(I, A)>
+	},
+	
+	/// The successor of the connected node.
+	Successor{
+		/// An optional tuple of id and address,
+		/// or None if the node has no successor.
+		/// (Its successor would be itself)
+		id: Option<(I, A)>
+	},
+
+
+	/// The successor of the requested id.
+	SuccessorOf{
+		/// Id of the successor of the requested id.
+		id: I,
+		/// Address of the successor of the requested id.
+		addr: A
+	},
+	
+
+	/// An error has occured within the chord.
+	Error{
+		/// More information about the error.
+		msg: String
+	},
+	
+	/// Debug message
+	Debug{
+		/// Currently the id, predecessor, and successor of the node
+		/// followed by a list of connections to other nodes.
+		msg: String
+	},
 }
 
 impl<A: ChordAddress, I: ChordId> From<Message<A, I>> for Option<AssociateResponse<A, I>> {
