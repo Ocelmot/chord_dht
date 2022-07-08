@@ -62,12 +62,22 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 	/// Receive a response from the chord.
 	/// If multiple requests have been sent, the response received may be a
 	/// response to any outstanding request.
-	pub async fn recv_op(&mut self) -> Option<AssociateResponse<A, I>>{
+	pub async fn recv_op(&mut self, limit: Option<u32>) -> Option<AssociateResponse<A, I>>{
 		loop{
-			let limit = tokio::time::Duration::from_secs(10);
-			let msg = timeout(limit, self.from.recv()).await;
+			let msg = if let Some(limit) = limit {
+				let limit = tokio::time::Duration::from_millis(limit.into());
+				let msg = timeout(limit, self.from.recv()).await;
+				match msg {
+					Ok(msg) => msg,
+					Err(_) => {return None},
+				}
+			}else{
+				self.from.recv().await
+			};
+			
+			
 			match msg {
-				Ok(Some(msg)) => {
+				Some(msg) => {
 					if let Some(msg) = msg.into() {
 						return Some(msg);
 					}

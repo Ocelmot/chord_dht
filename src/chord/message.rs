@@ -19,10 +19,12 @@ pub enum PrivateMessage<A: ChordAddress, I: ChordId>{
 	RegisterMember{addr: A, conn: Sender<PublicMessage<A, I>>},
 	RegisterAssociate{conn: Sender<PublicMessage<A, I>>},
 
+	// Timed Operation Triggers
 	Stabilize,
 	FixFingers,
 	CheckPredecessor,
 	Cleanup,
+	SaveState,
 }
 
 impl<A: ChordAddress, I: ChordId> From<PrivateMessage<A, I>> for Message<A, I> {

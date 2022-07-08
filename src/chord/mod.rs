@@ -1,6 +1,6 @@
 use crate::{adaptor::ChordAdaptor, associate::AssociateChannel, chord_id::ChordId, ChordAddress};
 
-use std::{time::Duration, collections::BTreeMap, ops::Bound::{Excluded, Unbounded}, sync::{atomic::{AtomicU32, Ordering}, Arc}, fmt::Debug};
+use std::{time::Duration, collections::BTreeMap, ops::Bound::{Excluded, Unbounded}, sync::{atomic::{AtomicU32, Ordering}, Arc}, fmt::Debug, path::{Path, PathBuf}, fs};
 
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use tokio::task::JoinHandle;
@@ -10,6 +10,9 @@ use serde::{Serialize, Deserialize};
 
 
 pub(crate) mod message;
+
+mod state;
+use state::ChordState;
 
 use message::Message;
 use tracing::{info, instrument};
@@ -44,6 +47,8 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	predecessor: Option<I>,
 
 	// Connections
+	listen_addr: Option<A>,
+	join_list: Vec<A>,
 	adaptor: ADAPTOR,
 	members: BTreeMap<I, (A, Sender<PublicMessage<A, I>>)>,
 	associates: BTreeMap<u32, Sender<PublicMessage<A, I>>>,
@@ -53,6 +58,9 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	// Operations channel
 	channel_rx: Receiver<(ProcessorId<I>, Message<A, I>)>,
 	channel_tx: Sender<(ProcessorId<I>, Message<A, I>)>,
+	
+	// Other
+	file_path: Option<PathBuf>,
 }
 
 impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPTOR>{
@@ -73,6 +81,8 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			predecessor: None,
 
 			// Connections
+			listen_addr: None,
+			join_list: Vec::new(),
 			adaptor,
 			members: connections,
 			associates: BTreeMap::new(),
@@ -82,7 +92,34 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			// Operations channel
 			channel_rx,
 			channel_tx,
+
+			// Other
+			file_path: None,
 		}
+	}
+
+	/// Create a new chord node from data stored in a file.
+	/// Additionally set the chord to save back to this file.
+	pub async fn from_file(path: PathBuf) -> Self{
+		let state = ChordState::from_file(&path).await;
+
+		let mut chord = Chord::new(state.node_addr, state.node_id);
+		chord.set_file(Some(path));
+		chord.set_join_list(state.known_addrs);
+
+		chord
+	}
+
+	/// Set the chord to save its state in a file located at path
+	pub fn set_file(&mut self, path: Option<PathBuf>){
+		self.file_path = path;
+	}
+
+	/// Give the chord a list of address to try to join when it starts.
+	/// If Some Address is passed to start() it will be tried before
+	/// these addresses.
+	pub fn set_join_list(&mut self, list: Vec<A>){
+		self.join_list = list;
 	}
 
 	/// Gets an AssociateChannel connected to this node. The channel will not
@@ -100,23 +137,49 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 	}
 
 	/// Starts the node. This will take ownership of the Chord and return a ChordHandle.
-	/// If passed Some(Address) the node will try to join that chord. Otherwise
-	/// it will be a new chord ready to be joined.
+	/// 
+	/// If passed Some(Address) that address will be prepended to the join list.
+	/// If the join list has any elements, the node will try to join each of
+	/// them in turn. The first to connect will be used as the address to join.
+	/// If no address are reachable, the node will not start.
+	/// If the join list is empty, the node will start, implicitly creating a
+	/// new chord.
 	pub async fn start(mut self, join_addr: Option<A>) -> ChordHandle<A, I> {
-		// panic!("listening on: {:?}, joining to: {:?}", self.self_addr, join_addr);
-		// if join_addr is not None, then connect and find our successor
+		let mut join_list = Vec::new();
+		if let Some(addr) = join_addr {
+			join_list.push(addr);
+		}
+		join_list.append(&mut self.join_list);
+
+		// if join_list is not empty, then connect and find our successor
 		let mut successor_data: Option<(I, A)> = None;
-		if let Some(join_addr) = join_addr {
-			let mut associate = ADAPTOR::associate_client(join_addr);
-			let join_node = associate.successor_of(self.self_id.clone()).await;
-			match join_node{
-				Some(x) => successor_data = Some(x),
-				None => todo!("Failed to find a successor in chord"),
+		if !join_list.is_empty() {
+			for addr in join_list.iter() {
+				let mut associate = ADAPTOR::associate_client(addr.clone());
+				let join_node = associate.successor_of(self.self_id.clone()).await;
+				match join_node{
+					Some(x) => {
+						successor_data = Some(x);
+						break
+					},
+					// if an invalid response, try next node
+					None => {},
+				}
+			}
+			// if after the loop, no successor data exists, quit
+			if successor_data.is_none() {
+				panic!("Unable to join chord");
 			}
 		}
 
+		
+
+		
+		
 		// Start listener task
-		let listener_handle = self.adaptor.listen_handler(self.self_addr.clone(), self.channel_tx.clone());
+		let listen_addr = self.listen_addr.clone().unwrap_or(self.self_addr.clone());
+		info!("Listening on {:?}", listen_addr);
+		let listener_handle = self.adaptor.listen_handler(listen_addr, self.channel_tx.clone());
 
 		// Start maintenance task
 		let stabilizer_channel = self.channel_tx.clone();
@@ -128,6 +191,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::FixFingers.into())).await;
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::Cleanup.into())).await;
 				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::CheckPredecessor.into())).await;
+				stabilizer_channel.send((ProcessorId::Internal, PrivateMessage::SaveState.into())).await;
 			}
 			// #[allow(unreachable_code)]
 			// Ok::<(), SendError<Message<A, I>>>(())

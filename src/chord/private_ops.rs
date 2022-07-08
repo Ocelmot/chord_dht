@@ -3,7 +3,7 @@ use tracing::{instrument, info};
 
 use crate::{Chord, chord_id::ChordId, adaptor::ChordAdaptor, ChordAddress};
 
-use super::{ProcessorId, message::{PrivateMessage, PublicMessage, Packet, PacketType}};
+use super::{ProcessorId, message::{PrivateMessage, PublicMessage, Packet, PacketType}, state::ChordState};
 
 
 
@@ -29,7 +29,10 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			},
 			PrivateMessage::Cleanup =>{
 				self.cleanup(channel_id).await;
-			}
+			},
+			PrivateMessage::SaveState => {
+				self.save_state(channel_id).await;
+			},
 		}
 	}
 
@@ -107,6 +110,20 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 				!ch.is_closed()
 			});
 
+		}
+	}
+
+	async fn save_state(&mut self, channel_id: ProcessorId<I>){
+		// make sure that message came from internal channel
+		if let ProcessorId::Internal = channel_id{ 
+			if let Some(path) = &self.file_path {
+				let mut state = ChordState::new(self.self_id.clone(), self.self_addr.clone()).await;
+				state.listen_addr = self.listen_addr.clone();
+				for (_, (addr, _)) in &self.members{
+					state.known_addrs.push(addr.clone());
+				}
+				state.save(path).await;
+			}
 		}
 	}
 

@@ -26,14 +26,14 @@ async fn ten_nodes_consistency() {
 	for handle in v{
 		let mut assoc = handle.get_associate().await;
 		assoc.send_op(AssociateRequest::GetSuccessor).await;
-		let succ = if let Some(AssociateResponse::Successor{id: Some((id, addr))}) = assoc.recv_op().await {
+		let succ = if let Some(AssociateResponse::Successor{id: Some((id, addr))}) = assoc.recv_op(Some(10000)).await {
 			id
 		}else {
 			panic!("Test failed since node has no successor!");
 		};
 
 		assoc.send_op(AssociateRequest::GetPredecessor).await;
-		let pred = if let Some(AssociateResponse::Predecessor{id: Some((id, addr))}) = assoc.recv_op().await {
+		let pred = if let Some(AssociateResponse::Predecessor{id: Some((id, addr))}) = assoc.recv_op(Some(10000)).await {
 			id
 		}else {
 			panic!("Test failed since node has no predecessor!");
@@ -51,7 +51,7 @@ async fn ten_nodes_consistency() {
 			predecessors.insert(pred);
 		}
 
-		let op = assoc.recv_op().await;
+		let op = assoc.recv_op(Some(10000)).await;
 		println!("=================");
 		if let Some(AssociateResponse::Debug { msg }) = op {
 			println!("{}", msg);
@@ -76,7 +76,7 @@ async fn finger_table_calculation() {
 	let mut origin = v[1].get_associate().await;
 	for i in 0..100 {
 		origin.send_op(AssociateRequest::Debug).await;
-		let op = origin.recv_op().await;
+		let op = origin.recv_op(Some(10000)).await;
 		println!("=================");
 		if let Some(AssociateResponse::Debug { msg }) = op {
 			println!("{}", msg);
@@ -109,7 +109,7 @@ async fn test_state_after_stabilization() {
 	for handle in v{
 		let mut assoc = handle.get_associate().await;
 		assoc.send_op(AssociateRequest::Debug).await;
-		if let Some(AssociateResponse::Debug { msg }) = assoc.recv_op().await {
+		if let Some(AssociateResponse::Debug { msg }) = assoc.recv_op(Some(10000)).await {
 			println!("{msg}");
 		}else {
 			println!("Node {i} failed to respond!");
