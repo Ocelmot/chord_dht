@@ -61,6 +61,7 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	
 	// Other
 	file_path: Option<PathBuf>,
+	advert: Option<Vec<u8>>,
 }
 
 impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPTOR>{
@@ -95,6 +96,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 			// Other
 			file_path: None,
+			advert: None,
 		}
 	}
 
@@ -102,10 +104,13 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 	/// Additionally set the chord to save back to this file.
 	pub async fn from_file(path: PathBuf) -> Self{
 		let state = ChordState::from_file(&path).await;
+	
 
 		let mut chord = Chord::new(state.node_addr, state.node_id);
 		chord.set_file(Some(path));
 		chord.set_join_list(state.known_addrs);
+
+		chord.set_listen_addr(state.listen_addr);
 
 		chord
 	}
@@ -115,11 +120,21 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		self.file_path = path;
 	}
 
+	/// Set the chord to save its state in a file located at path
+	pub fn set_listen_addr(&mut self, addr: Option<A>){
+		self.listen_addr = addr;
+	}
+
 	/// Give the chord a list of address to try to join when it starts.
 	/// If Some Address is passed to start() it will be tried before
 	/// these addresses.
 	pub fn set_join_list(&mut self, list: Vec<A>){
 		self.join_list = list;
+	}
+
+	/// Initialize the advert data for this node, pass None to clear it.
+	pub fn set_advert(&mut self, data: Option<Vec<u8>>){
+		self.advert = data;
 	}
 
 	/// Gets an AssociateChannel connected to this node. The channel will not

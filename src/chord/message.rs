@@ -53,11 +53,12 @@ pub enum PublicMessage<A: ChordAddress, I: ChordId>{
 	Route{packet: Packet<A, I>},
 	GetSuccessorOf{id: I},
 	SuccessorOf{id: I, addr: A},
-
 	Notify,
 
-	
-	
+	// Other
+	GetAdvertOf{id: I},
+	AdvertOf{data: Option<Vec<u8>>},
+
 	Error{msg: String},
 	Debug{msg: String},
 }
@@ -87,6 +88,8 @@ pub enum PacketType<A: ChordAddress, I: ChordId>{
 	GetSuccessorOf{id: I},
 	SuccessorOf{id: I, addr: A},
 	Dialback{id: I, addr: A},
+	GetAdvert,
+	Advert{data:Option<Vec<u8>>},
 	Error{msg: String}
 }
 

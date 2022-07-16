@@ -87,6 +87,39 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 		}
 	}
 
+	/// Query for the successor of a particular node,
+	/// and await the response as a single operation.
+	/// 
+	/// If other responses arrive, they are discarded.
+	pub async fn successor_of(&mut self, id: I) -> Option<(I, A)>{
+		self.send_op(AssociateRequest::GetSuccessorOf{id}).await;
+		loop{
+			let response = self.recv_op(Some(10)).await;
+			match response{
+				Some(AssociateResponse::SuccessorOf { id, addr }) => {
+					return Some((id, addr));
+				},
+				_ => return None,
+			}
+		}
+	}
+
+	/// Query for the advert of a particular node.
+	/// 
+	/// If other responses arrive, they are discarded.
+	pub async fn advert_of(&mut self, id: I) -> Option<Vec<u8>>{
+		self.send_op(AssociateRequest::GetAdvertOf{id}).await;
+		loop{
+			let response = self.recv_op(Some(10)).await;
+			match response{
+				Some(AssociateResponse::AdvertOf { data }) => {
+					return data;
+				},
+				_ => return None,
+			}
+		}
+	}
+
 
 }
 
@@ -107,6 +140,12 @@ pub enum AssociateRequest<A, I: ChordId>{
 		id: I
 	},
 
+	/// Get the advert for a particular node
+	GetAdvertOf{
+		/// The id of the node from which to get the advert
+		id: I
+	},
+
 	/// Request debug information
 	Debug,
 	#[doc(hidden)]
@@ -120,6 +159,8 @@ impl<A: ChordAddress, I: ChordId> From<AssociateRequest<A, I>> for PublicMessage
 			AssociateRequest::GetPredecessor => PublicMessage::GetPredecessor,
 			AssociateRequest::GetSuccessor => PublicMessage::GetSuccessor,
 			AssociateRequest::GetSuccessorOf { id } => PublicMessage::GetSuccessorOf { id },
+
+			AssociateRequest::GetAdvertOf { id } => PublicMessage::GetAdvertOf { id },
 
 			AssociateRequest::Debug => PublicMessage::Debug {msg: "".to_string()},
 			AssociateRequest::Marker { data } => panic!("This is just a marker to quiet the compiler"),
@@ -166,6 +207,11 @@ pub enum AssociateResponse<A, I: ChordId>{
 		addr: A
 	},
 	
+	/// The advert of the requested node
+	AdvertOf{
+		/// The advert data
+		data: Option<Vec<u8>>
+	},
 
 	/// An error has occured within the chord.
 	Error{
@@ -200,7 +246,7 @@ impl<A: ChordAddress, I: ChordId> From<PublicMessage<A, I>> for Option<Associate
 			PublicMessage::Successor { succ } => Some(AssociateResponse::Successor { id: succ }),
 
 			PublicMessage::SuccessorOf { addr, id } => Some(AssociateResponse::SuccessorOf { id, addr }),
-			
+			PublicMessage::AdvertOf { data } => Some(AssociateResponse::AdvertOf { data }),
 			
 			PublicMessage::Error { msg } => Some(AssociateResponse::Error { msg }),
 			PublicMessage::Debug { msg } => Some(AssociateResponse::Debug { msg }),

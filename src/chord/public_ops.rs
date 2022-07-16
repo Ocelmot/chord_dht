@@ -2,7 +2,7 @@ use tracing::{instrument, info};
 
 use crate::{chord_id::ChordId, adaptor::ChordAdaptor, Chord, ChordAddress};
 
-use super::{ProcessorId, message::{PublicMessage, PacketType}};
+use super::{ProcessorId, message::{PublicMessage, PacketType, Packet}};
 
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -46,25 +46,38 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 				println!("Node {:?} Recived route packet {:?}", self.self_id.clone(), packet);
 				if self.in_this_sector(&packet.to) {
 					println!("processing...");
-					match packet.packet_type {
-						PacketType::GetSuccessorOf { .. } => {
-							let reply = PacketType::SuccessorOf { id: self.self_id.clone(), addr: self.self_addr.clone() };
-							self.reply_packet(packet, reply).await;
-						},
-						PacketType::SuccessorOf { addr, id } => {
-							self.send_result(packet.channel, PublicMessage::SuccessorOf{addr, id}).await;
-						},
-						PacketType::Dialback { id, addr } => {
-							
-							if !self.members.contains_key(&id){ // there is no existing connection to this node, create one
-								let new_connection = self.adaptor.connect(addr.clone(), Some(self.self_id.clone()), self.channel_tx.clone());
-								new_connection.send(PublicMessage::Introduction { id: self.self_id.clone(), addr: self.self_addr.clone() }).await;
-								self.members.insert(id, (addr, new_connection));
-							}
-						},
-						PacketType::Error { msg } => {
-							self.send_result(packet.channel, PublicMessage::Error{msg}).await;
-						},
+					// test if packet was supposed to route to an exact node,
+					// but node does not exist
+					if packet.exact && packet.to != self.self_id {
+						self.reply_packet(packet, PacketType::Error { msg: "Node does not exist".to_string() }).await;
+					}else{
+						match packet.packet_type {
+							PacketType::GetSuccessorOf { .. } => {
+								let reply = PacketType::SuccessorOf { id: self.self_id.clone(), addr: self.self_addr.clone() };
+								self.reply_packet(packet, reply).await;
+							},
+							PacketType::SuccessorOf { addr, id } => {
+								self.send_result(packet.channel, PublicMessage::SuccessorOf{addr, id}).await;
+							},
+							PacketType::Dialback { id, addr } => {
+								
+								if !self.members.contains_key(&id){ // there is no existing connection to this node, create one
+									let new_connection = self.adaptor.connect(addr.clone(), Some(self.self_id.clone()), self.channel_tx.clone());
+									new_connection.send(PublicMessage::Introduction { id: self.self_id.clone(), addr: self.self_addr.clone() }).await;
+									self.members.insert(id, (addr, new_connection));
+								}
+							},
+							PacketType::GetAdvert => {
+								let reply = PacketType::Advert { data: self.advert.clone() };
+								self.reply_packet(packet, reply).await;
+							},
+							PacketType::Advert { data } => {
+								self.send_result(packet.channel, PublicMessage::AdvertOf{ data }).await;
+							},
+							PacketType::Error { msg } => {
+								self.send_result(packet.channel, PublicMessage::Error{msg}).await;
+							},
+						}
 					}
 				} else {
 					println!("routing...");
@@ -90,8 +103,13 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			PublicMessage::SuccessorOf { addr, id } => todo!(),
 			PublicMessage::Error { msg } => todo!(),
 
+			// Other
+			PublicMessage::GetAdvertOf { id } => {
+				self.get_advert(id, channel_id).await;
+			}
+			PublicMessage::AdvertOf { data } => {},
 
-			PublicMessage::Introduction { .. } => unimplemented!("This message is for sending the id to the adaptor initially"),
+			PublicMessage::Introduction { .. } => {}, // This message is for sending the id to the adaptor initially
 			
 			PublicMessage::Debug { msg } => {
 				self.debug(channel_id).await;
@@ -152,6 +170,13 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 	}
 
 
+	async fn get_advert(&mut self, id: I, channel_id: ProcessorId<I>){
+		if self.self_id == id {
+			self.send_result(channel_id, PublicMessage::AdvertOf { data: self.advert.clone() }).await;
+		}else{
+			self.route(id, self.self_id.clone(), channel_id, true, PacketType::GetAdvert).await;
+		}
+	}
 
 
 	async fn debug(&mut self, channel_id: ProcessorId<I>){

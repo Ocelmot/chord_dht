@@ -201,8 +201,9 @@ impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 				},
 				Err(e) =>{
 					println!("Encountered error reading from connection: {}", e);
+					
 					// probably should terminate connection here, depending on error
-					continue;
+					break Err(e);
 				}
 			}
 		}
