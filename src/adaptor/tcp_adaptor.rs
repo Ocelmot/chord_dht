@@ -1,7 +1,7 @@
 use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}};
 
 use super::{ChordAdaptor, Message, AssociateClient};
-use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage, PublicMessage}}};
+use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage, PublicMessage}}, adaptor::AssociateProtocol};
 
 use serde_json::{Deserializer, error::Category};
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
@@ -39,7 +39,7 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 						let mut ch_stream = TcpChordStream::<A, I>::new(stream);
 						let (inner_tx, inner_rx) = mpsc::channel(50);
 						let (id, message) = match ch_stream.peek().await {
-							Ok(PublicMessage::Introduction{id, addr}) => {
+							Ok(AssociateProtocol::Message(PublicMessage::Introduction{id, addr})) => {
 								let res = (ProcessorId::Member(id.clone()), PrivateMessage::RegisterMember { addr:addr.clone(), conn: inner_tx });
 								ch_stream.read().await;
 								res
@@ -88,7 +88,6 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 					incoming = stream.read() => {
 						match incoming{
 							Ok(incoming) => {
-								
 								from_tx.send(incoming).await;
 							},
 							Err(_) => break,
@@ -100,7 +99,7 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 						match outgoing {
 							Some(chord_result) => {
 								println!("about to send {:?}", chord_result);
-								if let Some(msg) = Option::<PublicMessage<A, I>>::from(chord_result){
+								if let Some(msg) = Option::<AssociateProtocol<A, I>>::from(chord_result){
 									stream.write(msg).await;
 								}
 							},
@@ -125,7 +124,18 @@ impl<A: ChordAddress, I: ChordId> TCPAdaptor<A, I>{
 					incoming = stream.read() => {
 						match incoming{
 							Ok(incoming) => {
-								channel_to_processor.send((id.clone(), Message::Public(incoming))).await;
+								
+								match incoming {
+									AssociateProtocol::Message(msg) => {
+										channel_to_processor.send((id.clone(), Message::Public(msg))).await;
+									},
+									AssociateProtocol::GetPublicAddr => {
+										let addr = stream.get_peer_address();
+										stream.write(AssociateProtocol::PublicAddr{addr}).await;
+									},
+									// Will never request a public address, skip processing responses
+									AssociateProtocol::PublicAddr { addr } => {},
+								}
 							},
 							Err(_) => break,
 						}
@@ -134,7 +144,7 @@ impl<A: ChordAddress, I: ChordId> TCPAdaptor<A, I>{
 					outgoing = channel_from_processor.recv() => {
 						match outgoing {
 							Some(msg) => {
-								stream.write(msg).await;
+								stream.write(AssociateProtocol::Message(msg)).await;
 							},
 							None => break,
 						}
@@ -149,7 +159,7 @@ impl<A: ChordAddress, I: ChordId> TCPAdaptor<A, I>{
 struct TcpChordStream<A: ChordAddress, I: ChordId>{
 	stream: TcpStream,
 	buffer: Vec<u8>,
-	peaked: Option<PublicMessage<A, I>>
+	peaked: Option<AssociateProtocol<A, I>>
 }
 impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 	pub fn new(stream: TcpStream) -> Self{
@@ -160,7 +170,7 @@ impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 		}
 	}
 
-	async fn read(&mut self) -> Result<PublicMessage<A, I>>{
+	async fn read(&mut self) -> Result<AssociateProtocol<A, I>>{
 		if let Some(msg) = self.peaked.take() {
 			// println!("Returning peaked message");
 			return Ok(msg);
@@ -209,14 +219,21 @@ impl<A: ChordAddress, I: ChordId> TcpChordStream<A, I>{
 		}
 	}
 
-	async fn write(&mut self, msg: PublicMessage<A, I>){
+	async fn write(&mut self, msg: AssociateProtocol<A, I>){
 		let raw_data = serde_json::ser::to_string(&msg).expect("Failed to serialize struct");
 		self.stream.write(raw_data.as_bytes()).await;
 	}
 
-	async fn peek(&mut self) -> Result<&mut PublicMessage<A, I>>{
+	async fn peek(&mut self) -> Result<&mut AssociateProtocol<A, I>>{
 		let msg = self.read().await?;
 		self.peaked = Some(msg);
 		Ok(self.peaked.as_mut().unwrap())
+	}
+
+	fn get_peer_address(&self) -> Option<String>{
+		match self.stream.peer_addr() {
+			Ok(addr) => Some(addr.to_string()),
+			Err(_) => None,
+		}
 	}
 }

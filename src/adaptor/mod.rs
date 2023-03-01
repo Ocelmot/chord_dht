@@ -6,9 +6,10 @@ use crate::{
 
 use std::{fmt::Debug, sync::{atomic::AtomicU32, Arc}};
 
+use serde::{Serialize, Deserialize};
 use tokio::{task::JoinHandle, sync::mpsc::{Sender, Receiver}};
 
-/// An implementation of ChordAdaptor for addresses that implement ToSocketAddrs
+/// An implementation of ChordAdaptor for address types that implement ToSocketAddrs
 pub mod tcp_adaptor;
 
 /// A ChordAdaptor is instantiated within a chord node to allow the node listen
@@ -36,18 +37,26 @@ pub trait ChordAdaptor<A: ChordAddress, I: ChordId>: Send + Sync + 'static + Deb
 	fn associate_client(addr: A) -> AssociateClient<A, I>;
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(bound = "")]
+enum AssociateProtocol<A: ChordAddress, I: ChordId>{
+	Message(PublicMessage<A, I>),
+	GetPublicAddr,
+	PublicAddr{addr: Option<String>},
+}
+
 /// An AssociateClient behaves very similarly to an AssociateChannel,
 /// the distinction being that it is connected to a remote node at a
 /// particular address rather than a node spawned on the current
 /// machine.
 pub struct AssociateClient<A: ChordAddress, I: ChordId>{
-	to: Sender<PublicMessage<A, I>>,
-	from: Receiver<PublicMessage<A, I>>,
+	to: Sender<AssociateProtocol<A, I>>,
+	from: Receiver<AssociateProtocol<A, I>>,
 }
 
 impl<A: ChordAddress, I: ChordId> AssociateClient<A, I> {
 	/// Create an AssociateClient from two streams, a Sender and a Receiver.
-	pub fn new(to: Sender<PublicMessage<A, I>>, from: Receiver<PublicMessage<A, I>>) -> Self{
+	fn new(to: Sender<AssociateProtocol<A, I>>, from: Receiver<AssociateProtocol<A, I>>) -> Self{
 		AssociateClient {
 			to,
 			from
@@ -60,7 +69,7 @@ impl<A: ChordAddress, I: ChordId> AssociateClient<A, I> {
 	/// If multiple requests are made, their responses may arrive in any
 	/// order.
 	pub async fn send_op(&self, msg: AssociateRequest<A, I>) {
-		self.to.send(msg.into()).await;
+		self.to.send(AssociateProtocol::Message(msg.into())).await;
 	}
 
 	/// Receive an AssociateResponse directly.
@@ -72,10 +81,19 @@ impl<A: ChordAddress, I: ChordId> AssociateClient<A, I> {
 		loop{
 			let msg = self.from.recv().await;
 			match msg {
-				Some(msg) => {
-					if let Some(msg) = msg.into() {
-						return Some(msg);
+				Some(prot) => {
+					match prot {
+						AssociateProtocol::Message(msg) => {
+							if let Some(msg) = msg.into() {
+								return Some(msg);
+							}
+						},
+						AssociateProtocol::GetPublicAddr => {}, // should never happen
+						AssociateProtocol::PublicAddr { addr } => {
+							return None;
+						},
 					}
+					
 				},
 				None => {return None},
 			}
@@ -99,5 +117,20 @@ impl<A: ChordAddress, I: ChordId> AssociateClient<A, I> {
 		}
 	}
 
+	/// Query for the connected node to return the address
+	/// it percieves as belonging to this connection.
+	/// Useful in determining the public address.
+	pub async fn public_address(&mut self) -> Option<String>{
+		self.to.send(AssociateProtocol::GetPublicAddr).await;
+		loop{
+			let response = self.from.recv().await;
+			match response{
+				Some(AssociateProtocol::PublicAddr{ addr }) => {
+					return addr;
+				},
+				_ => return None,
+			}
+		}
+	}
 
 }

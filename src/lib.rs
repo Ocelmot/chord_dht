@@ -44,7 +44,8 @@ pub mod adaptor;
 pub use adaptor::tcp_adaptor::TCPAdaptor;
 
 
-mod chord_id;
+/// Chord id
+pub mod chord_id;
 pub use chord_id::ChordId;
 
 
