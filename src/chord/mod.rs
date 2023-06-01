@@ -369,4 +369,14 @@ impl<A: ChordAddress, I: ChordId> ChordHandle<A, I> {
 	pub async fn get_associate(&self) -> AssociateChannel<A, I>{
 		self.associate_channel.duplicate().await
 	}
+
+	/// Force the chord to stop
+	pub async fn stop(self){
+		self.listener_handle.abort();
+		self.listener_handle.await;
+		self.maintenance_handle.abort();
+		self.maintenance_handle.await;
+		self.processor_handle.abort();
+		self.processor_handle.await;
+	}
 }

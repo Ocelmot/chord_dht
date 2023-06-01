@@ -68,11 +68,11 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 								}
 							},
 							PacketType::GetAdvert => {
-								let reply = PacketType::Advert { data: self.advert.clone() };
+								let reply = PacketType::Advert { id: self.self_id.clone(), data: self.advert.clone() };
 								self.reply_packet(packet, reply).await;
 							},
-							PacketType::Advert { data } => {
-								self.send_result(packet.channel, PublicMessage::AdvertOf{ data }).await;
+							PacketType::Advert { id, data } => {
+								self.send_result(packet.channel, PublicMessage::AdvertOf{ id, data }).await;
 							},
 							PacketType::Error { msg } => {
 								self.send_result(packet.channel, PublicMessage::Error{msg}).await;
@@ -107,7 +107,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			PublicMessage::GetAdvertOf { id } => {
 				self.get_advert(id, channel_id).await;
 			}
-			PublicMessage::AdvertOf { data } => {},
+			PublicMessage::AdvertOf { id, data } => {},
 
 			PublicMessage::Introduction { .. } => {}, // This message is for sending the id to the adaptor initially
 			
@@ -172,7 +172,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 	async fn get_advert(&mut self, id: I, channel_id: ProcessorId<I>){
 		if self.self_id == id {
-			self.send_result(channel_id, PublicMessage::AdvertOf { data: self.advert.clone() }).await;
+			self.send_result(channel_id, PublicMessage::AdvertOf { id: self.self_id.clone(), data: self.advert.clone() }).await;
 		}else{
 			self.route(id, self.self_id.clone(), channel_id, true, PacketType::GetAdvert).await;
 		}

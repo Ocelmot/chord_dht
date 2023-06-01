@@ -1,6 +1,6 @@
 use std::{sync::{atomic::{AtomicU32, Ordering}, Arc}, marker::PhantomData};
 
-use tokio::{sync::mpsc::{Sender, Receiver, channel}, time::timeout};
+use tokio::{sync::mpsc::{Sender, Receiver, channel}, time::{timeout, self}};
 use tracing::{instrument, info};
 
 use crate::{chord_id::ChordId, ChordAddress, chord::{message::{Message, PublicMessage, PrivateMessage}, ProcessorId}};
@@ -62,11 +62,12 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 	/// Receive a response from the chord.
 	/// If multiple requests have been sent, the response received may be a
 	/// response to any outstanding request.
-	pub async fn recv_op(&mut self, limit: Option<u32>) -> Option<AssociateResponse<A, I>>{
+	///  * `timeout` - Maximum time to wait for a response in miliseconds.
+	pub async fn recv_op(&mut self, timeout: Option<u32>) -> Option<AssociateResponse<A, I>>{
 		loop{
-			let msg = if let Some(limit) = limit {
+			let msg = if let Some(limit) = timeout {
 				let limit = tokio::time::Duration::from_millis(limit.into());
-				let msg = timeout(limit, self.from.recv()).await;
+				let msg = time::timeout(limit, self.from.recv()).await;
 				match msg {
 					Ok(msg) => msg,
 					Err(_) => {return None},
@@ -108,11 +109,14 @@ impl<A: ChordAddress, I: ChordId> AssociateChannel<A, I> {
 	/// 
 	/// If other responses arrive, they are discarded.
 	pub async fn advert_of(&mut self, id: I) -> Option<Vec<u8>>{
-		self.send_op(AssociateRequest::GetAdvertOf{id}).await;
+		self.send_op(AssociateRequest::GetAdvertOf{id: id.clone()}).await;
 		loop{
 			let response = self.recv_op(Some(10)).await;
 			match response{
-				Some(AssociateResponse::AdvertOf { data }) => {
+				Some(AssociateResponse::AdvertOf { id: advert_id, data }) => {
+					if advert_id != id {
+						return None
+					}
 					return data;
 				},
 				_ => return None,
@@ -209,6 +213,8 @@ pub enum AssociateResponse<A, I: ChordId>{
 	
 	/// The advert of the requested node
 	AdvertOf{
+		/// The id of the requested node
+		id: I,
 		/// The advert data
 		data: Option<Vec<u8>>
 	},
@@ -246,7 +252,7 @@ impl<A: ChordAddress, I: ChordId> From<PublicMessage<A, I>> for Option<Associate
 			PublicMessage::Successor { succ } => Some(AssociateResponse::Successor { id: succ }),
 
 			PublicMessage::SuccessorOf { addr, id } => Some(AssociateResponse::SuccessorOf { id, addr }),
-			PublicMessage::AdvertOf { data } => Some(AssociateResponse::AdvertOf { data }),
+			PublicMessage::AdvertOf { id, data } => Some(AssociateResponse::AdvertOf { id, data }),
 			
 			PublicMessage::Error { msg } => Some(AssociateResponse::Error { msg }),
 			PublicMessage::Debug { msg } => Some(AssociateResponse::Debug { msg }),
