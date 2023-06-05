@@ -150,6 +150,9 @@ pub enum AssociateRequest<A, I: ChordId>{
 		id: I
 	},
 
+	/// Get the addresses of currently connected peers
+	GetPeerAddresses,
+
 	/// Request debug information
 	Debug,
 	#[doc(hidden)]
@@ -165,6 +168,8 @@ impl<A: ChordAddress, I: ChordId> From<AssociateRequest<A, I>> for PublicMessage
 			AssociateRequest::GetSuccessorOf { id } => PublicMessage::GetSuccessorOf { id },
 
 			AssociateRequest::GetAdvertOf { id } => PublicMessage::GetAdvertOf { id },
+
+			AssociateRequest::GetPeerAddresses => PublicMessage::GetPeerAddresses,
 
 			AssociateRequest::Debug => PublicMessage::Debug {msg: "".to_string()},
 			AssociateRequest::Marker { data } => panic!("This is just a marker to quiet the compiler"),
@@ -218,6 +223,12 @@ pub enum AssociateResponse<A, I: ChordId>{
 		/// The advert data
 		data: Option<Vec<u8>>
 	},
+	
+	/// The currently connected peer addresses
+	PeerAddresses{
+		/// The currently connected peer addresses
+		addrs: Vec<A>
+	},
 
 	/// An error has occured within the chord.
 	Error{
@@ -253,6 +264,7 @@ impl<A: ChordAddress, I: ChordId> From<PublicMessage<A, I>> for Option<Associate
 
 			PublicMessage::SuccessorOf { addr, id } => Some(AssociateResponse::SuccessorOf { id, addr }),
 			PublicMessage::AdvertOf { id, data } => Some(AssociateResponse::AdvertOf { id, data }),
+			PublicMessage::PeerAddresses { addrs } => Some(AssociateResponse::PeerAddresses { addrs }),
 			
 			PublicMessage::Error { msg } => Some(AssociateResponse::Error { msg }),
 			PublicMessage::Debug { msg } => Some(AssociateResponse::Debug { msg }),

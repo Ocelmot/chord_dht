@@ -166,10 +166,10 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 	/// If no address are reachable, the node will not start.
 	/// If the join list is empty, the node will start, implicitly creating a
 	/// new chord.
-	pub async fn start(mut self, join_addr: Option<A>) -> ChordHandle<A, I> {
+	pub async fn start(mut self, join_addr: Option<A>) -> Option<ChordHandle<A, I>> {
 		let mut join_list = Vec::new();
 		if let Some(addr) = join_addr {
-			join_list.push(addr);
+			join_list.insert(0, addr);
 		}
 		join_list.append(&mut self.join_list);
 
@@ -190,13 +190,9 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			}
 			// if after the loop, no successor data exists, quit
 			if successor_data.is_none() {
-				panic!("Unable to join chord");
+				return None;
 			}
 		}
-
-		
-
-		
 		
 		// Start listener task
 		let listen_addr = self.listen_addr.clone().unwrap_or(self.self_addr.clone());
@@ -245,15 +241,13 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			info!("processor thread terminating");
 		});
 
-
-
-		ChordHandle{
+		Some(ChordHandle{
 			listener_handle,
 			maintenance_handle,
 			processor_handle,
 
 			associate_channel,
-		}
+		})
 	}
 
 

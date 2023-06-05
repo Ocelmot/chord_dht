@@ -15,10 +15,14 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 	pub(crate) async fn process_public(&mut self, channel_id: ProcessorId<I>, operation: PublicMessage<A, I>){
 		match operation{
+			// This message is for sending the id to the adaptor initially
+			PublicMessage::Introduction { .. } => {},
+
 			// State Operations
 			PublicMessage::GetID => {
 				self.send_result(channel_id, PublicMessage::ID{id: self.self_id.clone()}).await;
 			},
+			PublicMessage::ID { id } => {}, // Chord sends this message
 			PublicMessage::GetPredecessor { } => {
 				let mut pred = None;
 				if let Some(pred_id) = &self.predecessor{
@@ -29,6 +33,10 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 				self.send_result(channel_id, PublicMessage::Predecessor{pred}).await;
 			},
+			// Step 2 of stabilize procedure: receive predecessor from successor
+			PublicMessage::Predecessor { pred} => {
+				self.predecessor(channel_id, pred).await;
+			},
 			PublicMessage::GetSuccessor { } => {
 				let succ = if let Some((id, addr)) = self.successor() {
 					Some((id.clone(), addr.clone()))
@@ -38,6 +46,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 
 				self.send_result(channel_id, PublicMessage::Successor{succ}).await;
 			},
+			PublicMessage::Successor { .. } => {},
 
 			// Chord Operations
 			PublicMessage::Route{packet} => {
@@ -84,33 +93,31 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 					self.route_packet(packet).await;
 				}
 			},
-
 			PublicMessage::GetSuccessorOf { id } => {
 				self.get_successor_of(id, channel_id).await;
 			}
+			PublicMessage::SuccessorOf { addr, id } => {}, // Chord sends this message
 
-
-			PublicMessage::ID { id } => todo!(),
-			// Step 2 of stabilize procedure: receive predecessor from successor
-			PublicMessage::Predecessor { pred} => {
-				self.predecessor(channel_id, pred).await;
-			},
-			PublicMessage::Successor { .. } => {},
 			// Step 3 of stabilize procedure: respond to incoming notifications from predecessor
 			PublicMessage::Notify => {
 				self.notify(channel_id).await;
 			}
-			PublicMessage::SuccessorOf { addr, id } => todo!(),
-			PublicMessage::Error { msg } => todo!(),
+			
+
+			
 
 			// Other
 			PublicMessage::GetAdvertOf { id } => {
 				self.get_advert(id, channel_id).await;
 			}
 			PublicMessage::AdvertOf { id, data } => {},
+			PublicMessage::GetPeerAddresses =>{
+				self.get_peer_addrs(channel_id).await;
+			}
+			PublicMessage::PeerAddresses { .. } => {} // Chord will not request for this
 
-			PublicMessage::Introduction { .. } => {}, // This message is for sending the id to the adaptor initially
-			
+			// Debug
+			PublicMessage::Error { msg } => {}, // Chord sends this message
 			PublicMessage::Debug { msg } => {
 				self.debug(channel_id).await;
 			},
@@ -176,6 +183,16 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		}else{
 			self.route(id, self.self_id.clone(), channel_id, true, PacketType::GetAdvert).await;
 		}
+	}
+
+	async fn get_peer_addrs(&mut self, channel_id: ProcessorId<I>){
+		let mut addrs = Vec::with_capacity(self.members.len());
+		for (_id, (addr, _sender)) in &self.members{
+			addrs.push(addr.clone());
+		}
+		
+		let msg = PublicMessage::PeerAddresses { addrs };
+		self.send_result(channel_id, msg).await;
 	}
 
 

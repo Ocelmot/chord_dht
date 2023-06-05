@@ -47,8 +47,6 @@ pub enum PublicMessage<A: ChordAddress, I: ChordId>{
 	GetSuccessor,
 	Successor{succ: Option<(I, A)>},
 
-	
-
 	// Chord Operations
 	Route{packet: Packet<A, I>},
 	GetSuccessorOf{id: I},
@@ -58,7 +56,10 @@ pub enum PublicMessage<A: ChordAddress, I: ChordId>{
 	// Other
 	GetAdvertOf{id: I},
 	AdvertOf{id: I, data: Option<Vec<u8>>},
+	GetPeerAddresses,
+	PeerAddresses{addrs: Vec<A>},
 
+	//Debug
 	Error{msg: String},
 	Debug{msg: String},
 }
