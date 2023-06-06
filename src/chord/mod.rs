@@ -61,6 +61,7 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	associates: BTreeMap<u32, Sender<PublicMessage<A, I>>>,
 	finger_index: u32,
 	next_associate_id: Arc<AtomicU32>,
+	join_or_host: bool,
 
 	// Operations channel
 	channel_rx: Receiver<(ProcessorId<I>, Message<A, I>)>,
@@ -96,6 +97,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			associates: BTreeMap::new(),
 			finger_index: 1,
 			next_associate_id,
+			join_or_host: false,
 
 			// Operations channel
 			channel_rx,
@@ -127,9 +129,14 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		self.file_path = path;
 	}
 
-	/// Set the chord to save its state in a file located at path
+	/// Set the chord's listen address
 	pub fn set_listen_addr(&mut self, addr: Option<A>){
 		self.listen_addr = addr;
+	}
+
+	/// Set if this chord will default to hosting if the join attempts fail
+	pub fn set_join_or_host(&mut self, join_or_host: bool){
+		self.join_or_host = join_or_host;
 	}
 
 	/// Give the chord a list of address to try to join when it starts.
@@ -188,8 +195,9 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 					None => {},
 				}
 			}
-			// if after the loop, no successor data exists, quit
-			if successor_data.is_none() {
+			// if after the loop, no successor data exists 
+			// and not hosting as a fallback, quit
+			if successor_data.is_none() && !self.join_or_host{
 				return None;
 			}
 		}

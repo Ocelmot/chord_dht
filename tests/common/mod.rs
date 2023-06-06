@@ -14,7 +14,7 @@ pub async fn make_nodes(qty: u32, delay: u32) ->Vec<ChordHandle<String, u32>>{
 		}else{
 			chord.start(None).await
 		};
-		v.push(handle);
+		v.push(handle.expect("Chords should be able to start"));
 		println!("Waiting {delay}ms to spawn next node...");
 		sleep(Duration::from_millis(delay.into())).await;
 		println!("waiting over...");

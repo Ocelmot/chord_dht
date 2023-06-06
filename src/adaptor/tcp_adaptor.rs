@@ -5,6 +5,7 @@ use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage
 
 use serde_json::{Deserializer, error::Category};
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
+use tracing::instrument;
 
 /// An implementation of ChordAdaptor that creates TCP connections from any address type that implements ToSocketAddrs.
 #[derive(Debug)]
