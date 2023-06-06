@@ -15,7 +15,7 @@ use crate::{ChordAddress, chord_id::ChordId};
 pub(crate) struct ChordState<A: ChordAddress, I: ChordId>{
     pub node_id: I,
     pub node_addr: A,
-    pub listen_addr: Option<A>,
+    pub listen_addr: A,
 
     pub known_addrs: Vec<A>
 }
@@ -23,10 +23,11 @@ pub(crate) struct ChordState<A: ChordAddress, I: ChordId>{
 
 impl<A: ChordAddress, I: ChordId> ChordState<A, I> {
     pub async fn new(node_id: I, node_addr: A) -> Self {
+        let listen_addr = node_addr.clone();
         ChordState {
             node_id,
             node_addr,
-            listen_addr: None,
+            listen_addr,
             known_addrs: Vec::new(),
         }
     }

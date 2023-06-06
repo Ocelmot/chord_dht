@@ -54,7 +54,7 @@ pub struct Chord<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>>{
 	predecessor: Option<I>,
 
 	// Connections
-	listen_addr: Option<A>,
+	listen_addr: A,
 	join_list: Vec<A>,
 	adaptor: ADAPTOR,
 	members: BTreeMap<I, (A, Sender<PublicMessage<A, I>>)>,
@@ -77,20 +77,20 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 	/// Creates a new Chord instance with the provided id and address.
 	/// The address will be passed to the adaptor to function as the
 	/// listen address.
-	pub fn new (self_addr: A, self_id: I) -> Self{
+	pub fn new (addr: A, self_id: I) -> Self{
 		let (channel_tx, channel_rx) = channel(50);
 		let next_associate_id = Arc::new(AtomicU32::new(1));
-		let adaptor = ADAPTOR::new(self_id.clone(), self_addr.clone(), next_associate_id.clone());
+		let adaptor = ADAPTOR::new(next_associate_id.clone());
 		let connections = BTreeMap::new();
 
 		Chord{
 			// Core data
-			self_addr,
+			self_addr: addr.clone(),
 			self_id,
 			predecessor: None,
 
 			// Connections
-			listen_addr: None,
+			listen_addr: addr,
 			join_list: Vec::new(),
 			adaptor,
 			members: connections,
@@ -129,8 +129,13 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		self.file_path = path;
 	}
 
+	/// Set the chord's self address
+	pub fn set_self_addr(&mut self, addr: A){
+		self.self_addr = addr;
+	}
+
 	/// Set the chord's listen address
-	pub fn set_listen_addr(&mut self, addr: Option<A>){
+	pub fn set_listen_addr(&mut self, addr: A){
 		self.listen_addr = addr;
 	}
 
@@ -203,7 +208,7 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 		}
 		
 		// Start listener task
-		let listen_addr = self.listen_addr.clone().unwrap_or(self.self_addr.clone());
+		let listen_addr = self.listen_addr.clone();
 		info!("Listening on {:?}", listen_addr);
 		let listener_handle = self.adaptor.listen_handler(listen_addr, self.channel_tx.clone());
 

@@ -1,28 +1,27 @@
-use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}};
+use std::{io::{ErrorKind, Result}, sync::{Arc, atomic::{AtomicU32, Ordering}}, marker::PhantomData};
 
 use super::{ChordAdaptor, Message, AssociateClient};
 use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage, PublicMessage}}, adaptor::AssociateProtocol};
 
 use serde_json::{Deserializer, error::Category};
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
-use tracing::instrument;
 
 /// An implementation of ChordAdaptor that creates TCP connections from any address type that implements ToSocketAddrs.
 #[derive(Debug)]
 pub struct TCPAdaptor<A, I>{
-	id: I,
-	addr: A,
+	
 	next_associate_id: Arc<AtomicU32>,
-
+	id: PhantomData<I>,
+	addr: PhantomData<A>,
 }
 
 impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdaptor<A, I>{
 	
-	fn new(id: I, addr: A, next_associate_id: Arc<AtomicU32>) -> Self{
+	fn new(next_associate_id: Arc<AtomicU32>) -> Self{
 		Self{
-			id,
-			addr,
 			next_associate_id,
+			id: PhantomData,
+			addr: PhantomData,
 		}
 	}
 

@@ -20,7 +20,7 @@ pub mod tcp_adaptor;
 pub trait ChordAdaptor<A: ChordAddress, I: ChordId>: Send + Sync + 'static + Debug{
 
 	/// Create a new ChordAdaptor instance
-	fn new(id: I, addr: A, next_associate_id: Arc<AtomicU32>) -> Self;
+	fn new(next_associate_id: Arc<AtomicU32>) -> Self;
 
 	/// Spawn a task to listen for new connections to listen_addr.
 	/// New channels are then registered through the provided sender channel.
