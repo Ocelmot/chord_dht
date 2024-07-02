@@ -52,7 +52,6 @@ impl<A: ChordAddress, I: ChordId, ADAPTOR: ChordAdaptor<A, I>> Chord<A, I, ADAPT
 			PublicMessage::Route{packet} => {
 				// if route is to us, handle result
 				// otherwise, route the packet along
-				println!("Node {:?} Recived route packet {:?}", self.self_id.clone(), packet);
 				if self.in_this_sector(&packet.to) {
 					println!("processing...");
 					// test if packet was supposed to route to an exact node,

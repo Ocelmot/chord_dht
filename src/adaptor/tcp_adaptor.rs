@@ -5,11 +5,11 @@ use crate::{ChordId, ChordAddress, chord::{ProcessorId, message::{PrivateMessage
 
 use serde_json::{Deserializer, error::Category};
 use tokio::{net::{ToSocketAddrs, TcpListener, TcpStream}, sync::mpsc::{Sender, self, Receiver}, task::JoinHandle, io::{AsyncWriteExt, AsyncReadExt}, select};
+use tracing::error;
 
 /// An implementation of ChordAdaptor that creates TCP connections from any address type that implements ToSocketAddrs.
 #[derive(Debug)]
 pub struct TCPAdaptor<A, I>{
-	
 	next_associate_id: Arc<AtomicU32>,
 	id: PhantomData<I>,
 	addr: PhantomData<A>,
@@ -79,7 +79,13 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 		let (to_tx, mut to_rx) = mpsc::channel(50);
 		let (from_tx, from_rx) = mpsc::channel(50);
 		tokio::spawn(async move{
-			let stream = TcpStream::connect(addr).await.expect("failed to connect");
+			let stream = match TcpStream::connect(addr.clone()).await {
+				Ok(stream) => stream,
+				Err(e) => {
+					error!("failed to connect to {:?} with error {}", addr, e);
+					return;
+				},
+			};
 			let mut stream = TcpChordStream::<A, I>::new(stream);
 			loop{
 				// select on reading from stream and reading from created channel
@@ -88,7 +94,9 @@ impl<A: ChordAddress + ToSocketAddrs, I: ChordId> ChordAdaptor<A, I> for TCPAdap
 					incoming = stream.read() => {
 						match incoming{
 							Ok(incoming) => {
-								from_tx.send(incoming).await;
+								if from_tx.send(incoming).await.is_err() {
+									break;
+								}
 							},
 							Err(_) => break,
 						}
